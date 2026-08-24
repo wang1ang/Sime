@@ -866,7 +866,11 @@ std::vector<DecodeResult> Sime::DecodeStr(
     for (auto& col : net) PruneNode(col.es);
 
     const std::size_t max_top = num == 0 ? 1 : num;
-    for (auto& col : net) col.states.SetMaxTop(BeamSize);
+    // DecodeStr powers explicit word/character selection. Unlike sentence
+    // beam search, callers may need every homophone (including low-frequency
+    // characters), so preserve enough states for the requested result count.
+    const std::size_t state_limit = std::max(BeamSize, max_top);
+    for (auto& col : net) col.states.SetMaxTop(state_limit);
     State init = InitialState();
     net[0].states.Insert(init);
     Process(net);
