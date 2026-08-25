@@ -1413,9 +1413,14 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     // column zero to the tapped syllable. Seed its LM state with the fixed
     // text's tokenization, so words and characters are scored after it.
     std::vector<TokenID> context;
-    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
-    for (const auto& token : cutter_->Cut(fixed_prefix)) {
-        if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
+    // Do not allocate the text segmenter's large dictionary index from a
+    // correction tap. Keyboard extensions have a tight memory budget; host
+    // context creates it during ordinary composition when available. A tap
+    // before that remains safe and uses the lattice prefix constraint alone.
+    if (cutter_) {
+        for (const auto& token : cutter_->Cut(fixed_prefix)) {
+            if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
+        }
     }
     const State prefix_state = InitialState(context);
     while (correction_col < lower.size() &&
