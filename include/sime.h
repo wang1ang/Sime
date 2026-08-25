@@ -74,6 +74,12 @@ public:
         std::string_view input,
         const std::vector<TokenID>& context,
         std::size_t extra = 0) const;
+    // Candidate list for character correction. `fixed_prefix` is the UTF-8
+    // text before the tapped syllable and stays unchanged; returned texts are
+    // only the replaceable suffix. Long paths precede short/character paths.
+    std::vector<DecodeResult> DecodeCorrection(
+        std::string_view input, std::string_view fixed_prefix,
+        std::size_t prefix_syllables, std::size_t num = 60) const;
     // Prediction: given confirmed token IDs as context, suggest next words.
     // When `en` is true, only English tokens are returned (for the English
     // IME's prediction slot); Chinese tokens are filtered out.

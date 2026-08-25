@@ -1343,6 +1343,68 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     return results;
 }
 
+std::vector<DecodeResult> Sime::DecodeCorrection(
+    std::string_view input, std::string_view fixed_prefix,
+    std::size_t prefix_syllables, std::size_t num) const {
+    if (input.empty() || num == 0) return {};
+
+    // DecodeStr already builds the normal pinyin lattice and preserves a wide
+    // beam for character recall. Constrain complete paths by the literal text
+    // before the tap, then expose their editable suffixes.
+    const auto full_paths = DecodeStr(input, std::max<std::size_t>(num, 60));
+    if (full_paths.empty()) return {};
+    const float_t score_floor = full_paths.front().score - 18.0;
+    std::vector<DecodeResult> results;
+    std::unordered_set<std::string> seen;
+    std::string active_syllable;
+
+    for (const auto& path : full_paths) {
+        if (path.score < score_floor || !path.text.starts_with(fixed_prefix)) {
+            continue;
+        }
+        std::vector<std::string_view> syllables;
+        std::size_t start = 0;
+        while (start <= path.units.size()) {
+            const std::size_t end = path.units.find('\'', start);
+            syllables.push_back(std::string_view(path.units).substr(
+                start, end == std::string::npos ? std::string::npos : end - start));
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        if (syllables.size() <= prefix_syllables ||
+            path.text.size() <= fixed_prefix.size()) {
+            continue;
+        }
+        if (active_syllable.empty()) {
+            active_syllable = std::string(syllables[prefix_syllables]);
+        }
+        std::string units;
+        for (std::size_t i = prefix_syllables; i < syllables.size(); ++i) {
+            if (!units.empty()) units.push_back('\'');
+            units.append(syllables[i]);
+        }
+        DecodeResult suffix = path;
+        suffix.text.erase(0, fixed_prefix.size());
+        suffix.units = std::move(units);
+        if (seen.insert(suffix.text).second) {
+            results.push_back(std::move(suffix));
+        }
+    }
+
+    // This is DecodeSentence's normal Layer-2 character recall, anchored at
+    // the tapped syllable. Keeping it here means Swift receives one ordered
+    // correction list rather than stitching separate candidate sources.
+    if (!active_syllable.empty()) {
+        for (auto character : DecodeStr(active_syllable, num)) {
+            if (ustr::ToU32(character.text).size() != 1) continue;
+            if (seen.insert(character.text).second) {
+                results.push_back(std::move(character));
+            }
+        }
+    }
+    return results;
+}
+
 std::vector<DecodeResult> Sime::NextTokens(
     const std::vector<TokenID>& context,
     std::size_t num,
