@@ -181,6 +181,21 @@ std::string Sime::TokenText(TokenID id) const {
     return TextFromU32(u32);
 }
 
+std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!ready_ || text.empty()) {
+        return {};
+    }
+    Cutter cutter(dict_, scorer_);
+    std::vector<TokenID> tokens;
+    for (const auto& token : cutter.Cut(text)) {
+        if (!token.is_unk && token.id != NotToken) {
+            tokens.push_back(token.id);
+        }
+    }
+    return tokens;
+}
+
 void Sime::ComputeEdgePenalties(std::vector<Node>& net,
                                 std::string_view input) {
     // English penalty: only "long input + full coverage" English gets

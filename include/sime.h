@@ -61,6 +61,9 @@ public:
     // UTF-8 text for a single token id, sourced from the dict's
     // mmap'd token table. Empty for NotToken or out-of-range ids.
     std::string TokenText(TokenID id) const;
+    // Segment already-written UTF-8 text into known LM token IDs. Unknown
+    // fragments are omitted so callers can safely use the result as context.
+    std::vector<TokenID> Tokenize(std::string_view text) const;
 
     // Decode
     std::vector<DecodeResult> DecodeStr(std::string_view input,
