@@ -44,6 +44,16 @@ if(SIME_ENABLE_NCNN)
     endif()
 endif()
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(sime-correction-test ${NEW_ROOT}/tests/correction_test.cc)
+    target_link_libraries(sime-correction-test PRIVATE sime_core)
+    target_compile_definitions(sime-correction-test PRIVATE
+        SIME_TEST_DICT="${NEW_ROOT}/save/sime.dict"
+        SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt")
+    add_test(NAME sime-correction COMMAND sime-correction-test)
+endif()
+
 option(SIME_BUILD_TOOLS "Build Sime command-line and model tools" ON)
 if(SIME_BUILD_TOOLS)
     add_executable(sime-count ${NEW_ROOT}/bin/counter.cc)
