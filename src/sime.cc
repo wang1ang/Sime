@@ -1346,61 +1346,110 @@ std::vector<DecodeResult> Sime::DecodeSentence(
 std::vector<DecodeResult> Sime::DecodeCorrection(
     std::string_view input, std::string_view fixed_prefix,
     std::size_t prefix_syllables, std::size_t num) const {
-    if (input.empty() || num == 0) return {};
-
-    // DecodeStr already builds the normal pinyin lattice and preserves a wide
-    // beam for character recall. Constrain complete paths by the literal text
-    // before the tap, then expose their editable suffixes.
-    const auto full_paths = DecodeStr(input, std::max<std::size_t>(num, 60));
-    if (full_paths.empty()) return {};
-    const float_t score_floor = full_paths.front().score - 18.0;
+    std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
-    std::unordered_set<std::string> seen;
-    std::string active_syllable;
+    if (!ready_ || input.empty() || num == 0) return results;
+    MaybeTrimCaches();
 
-    for (const auto& path : full_paths) {
-        if (path.score < score_floor || !path.text.starts_with(fixed_prefix)) {
-            continue;
-        }
-        std::vector<std::string_view> syllables;
-        std::size_t start = 0;
-        while (start <= path.units.size()) {
-            const std::size_t end = path.units.find('\'', start);
-            syllables.push_back(std::string_view(path.units).substr(
-                start, end == std::string::npos ? std::string::npos : end - start));
-            if (end == std::string::npos) break;
-            start = end + 1;
-        }
-        if (syllables.size() <= prefix_syllables ||
-            path.text.size() <= fixed_prefix.size()) {
-            continue;
-        }
-        if (active_syllable.empty()) {
-            active_syllable = std::string(syllables[prefix_syllables]);
-        }
-        std::string units;
-        for (std::size_t i = prefix_syllables; i < syllables.size(); ++i) {
-            if (!units.empty()) units.push_back('\'');
-            units.append(syllables[i]);
-        }
-        DecodeResult suffix = path;
-        suffix.text.erase(0, fixed_prefix.size());
-        suffix.units = std::move(units);
-        if (seen.insert(suffix.text).second) {
-            results.push_back(std::move(suffix));
-        }
+    const std::string lower = NormalizeInput(input);
+    if (lower.empty()) return results;
+    std::size_t correction_col = 0;
+    for (std::size_t i = 0; i < prefix_syllables; ++i) {
+        const std::size_t quote = lower.find('\'', correction_col);
+        if (quote == std::string::npos) return results;
+        correction_col = quote + 1;
     }
 
-    // This is DecodeSentence's normal Layer-2 character recall, anchored at
-    // the tapped syllable. Keeping it here means Swift receives one ordered
-    // correction list rather than stitching separate candidate sources.
-    if (!active_syllable.empty()) {
-        for (auto character : DecodeStr(active_syllable, num)) {
-            if (ustr::ToU32(character.text).size() != 1) continue;
-            if (seen.insert(character.text).second) {
-                results.push_back(std::move(character));
-            }
+    std::vector<Node> net;
+    InitNet(lower, net, /*expansion=*/true);
+    ComputeEdgePenalties(net, lower);
+    for (auto& col : net) PruneNode(col.es);
+    for (auto& col : net) col.states.SetMaxTop(BeamSize);
+    net[0].states.Insert(InitialState());
+    Process(net);
+
+    std::unordered_set<std::string> seen;
+    // Layer 1 is the ordinary final-column beam, except that only paths whose
+    // emitted text starts with the fixed prefix are legal correction paths.
+    const auto tail = net.back().states.GetStates();
+    const std::size_t scan = std::min<std::size_t>(BeamSize, tail.size());
+    std::vector<DecodeResult> full;
+    std::unordered_set<std::string> full_seen;
+    for (std::size_t rank = 0; rank < scan; ++rank) {
+        auto path = Backtrace(tail[rank], net.size() - 1);
+        if (path.empty()) continue;
+        std::string text = ExtractText(path);
+        if (!text.starts_with(fixed_prefix) || text.size() <= fixed_prefix.size()) {
+            continue;
         }
+        std::string units = ExtractUnits(path, lower);
+        std::size_t cut = 0;
+        for (std::size_t i = 0; i < prefix_syllables; ++i) {
+            const std::size_t quote = units.find('\'', cut);
+            if (quote == std::string::npos) { cut = units.size(); break; }
+            cut = quote + 1;
+        }
+        text.erase(0, fixed_prefix.size());
+        if (cut < units.size()) {
+            units.erase(0, cut);
+        } else {
+            units.clear();
+        }
+        if (!full_seen.insert(text).second) continue;
+        full.push_back({std::move(text), std::move(units),
+                        ExtractTokens(path), -tail[rank].score, input.size()});
+    }
+    std::sort(full.begin(), full.end(), [](const DecodeResult& a,
+                                           const DecodeResult& b) {
+        return a.score > b.score;
+    });
+    // Match iOS's existing DecodeSentence(extra: 2) behavior.
+    for (std::size_t i = 0; i < full.size() && i < 3; ++i) {
+        seen.insert(full[i].text);
+        results.push_back(std::move(full[i]));
+    }
+
+    // Layer 2 is the same edge enumeration as DecodeSentence, moved from
+    // column zero to the tapped syllable. Seed its LM state with the fixed
+    // text's tokenization, so words and characters are scored after it.
+    Cutter cutter(dict_, scorer_);
+    std::vector<TokenID> context;
+    for (const auto& token : cutter.Cut(fixed_prefix)) {
+        if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
+    }
+    const State prefix_state = InitialState(context);
+    while (correction_col < lower.size() &&
+           net[correction_col].es.size() == 1 &&
+           net[correction_col].es[0].id == NotToken) {
+        ++correction_col;
+    }
+    if (correction_col >= net.size()) return results;
+    const float_t penalty_per_unit =
+        std::abs(scorer_.UnknownPenalty()) / DistancePenalty;
+    std::vector<DecodeResult> short_results;
+    for (const auto& edge : net[correction_col].es) {
+        if (edge.id == NotToken) continue;
+        std::u32string text_u32 = ToText(edge);
+        if (text_u32.empty()) continue;
+        std::string text = TextFromU32(text_u32);
+        if (seen.contains(text)) continue;
+        Scorer::Pos next{};
+        const float_t score = -scorer_.ScoreMove(prefix_state.pos, edge.id, next)
+            - edge.penalty
+            - static_cast<float_t>(lower.size() - edge.end) * penalty_per_unit;
+        const auto slice = std::string_view(lower).substr(
+            edge.start, edge.end - edge.start);
+        std::string units = edge.pieces ? AbbreviatePieces(edge.pieces, slice) : "";
+        short_results.push_back({std::move(text), std::move(units),
+                                 ExtractTokens({edge}), score, edge.end - correction_col});
+    }
+    std::sort(short_results.begin(), short_results.end(),
+              [](const DecodeResult& a, const DecodeResult& b) {
+                  return a.score > b.score;
+              });
+    for (auto& entry : short_results) {
+        if (results.size() >= num) break;
+        if (seen.insert(entry.text).second) results.push_back(std::move(entry));
     }
     return results;
 }
