@@ -132,10 +132,10 @@ bool Sime::LoadUserSentence(const std::filesystem::path& path) {
     // vocabulary via Cutter, then persist immediately so the file is
     // consistent and next load takes the fast path.
     if (!ready_) return false;
-    Cutter cutter(dict_, scorer_);
-    auto tokenize = [&cutter](std::string_view text) {
+    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
+    auto tokenize = [this](std::string_view text) {
         std::vector<std::pair<TokenID, std::string>> out;
-        auto cuts = cutter.Cut(text);
+        auto cuts = cutter_->Cut(text);
         out.reserve(cuts.size());
         for (auto& ct : cuts) {
             TokenID id = ct.is_unk ? NotToken : ct.id;
@@ -186,9 +186,9 @@ std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
     if (!ready_ || text.empty()) {
         return {};
     }
-    Cutter cutter(dict_, scorer_);
     std::vector<TokenID> tokens;
-    for (const auto& token : cutter.Cut(text)) {
+    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
+    for (const auto& token : cutter_->Cut(text)) {
         if (!token.is_unk && token.id != NotToken) {
             tokens.push_back(token.id);
         }
@@ -1412,9 +1412,9 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     // Layer 2 is the same edge enumeration as DecodeSentence, moved from
     // column zero to the tapped syllable. Seed its LM state with the fixed
     // text's tokenization, so words and characters are scored after it.
-    Cutter cutter(dict_, scorer_);
     std::vector<TokenID> context;
-    for (const auto& token : cutter.Cut(fixed_prefix)) {
+    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
+    for (const auto& token : cutter_->Cut(fixed_prefix)) {
         if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
     }
     const State prefix_state = InitialState(context);

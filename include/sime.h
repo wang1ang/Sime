@@ -15,6 +15,7 @@
 namespace sime {
 
 class GruReranker;
+class Cutter;
 
 struct DecodeResult {
     std::string text;        // UTF-8 display text (▁ prefix stripped)
@@ -210,6 +211,7 @@ private:
     bool user_sentence_enabled_ = false;
     bool ready_ = false;
     std::unique_ptr<GruReranker> gru_;
+    mutable std::unique_ptr<Cutter> cutter_;
 };
 
 } // namespace sime
