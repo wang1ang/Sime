@@ -184,6 +184,12 @@ private:
                                         std::string_view input);
     std::vector<TokenID> ExtractTokens(const std::vector<Link>& path) const;
     static std::string TextFromU32(std::u32string& u32);
+    std::vector<DecodeResult> CollectCandidates(
+        const std::vector<Node>& net, std::string_view input,
+        std::size_t layer2_col, const std::vector<TokenID>& context,
+        std::size_t full_extra, std::string_view fixed_prefix = {},
+        std::size_t prefix_syllables = 0,
+        std::size_t result_limit = 0) const;
 
     // Num-key lattice
     void InitNumNet(std::string_view start,

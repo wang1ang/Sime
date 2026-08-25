@@ -1212,6 +1212,94 @@ std::u32string Sime::ToText(const Link& n) const {
     return buffer;
 }
 
+std::vector<DecodeResult> Sime::CollectCandidates(
+    const std::vector<Node>& net, std::string_view input,
+    std::size_t layer2_col, const std::vector<TokenID>& context,
+    std::size_t full_extra, std::string_view fixed_prefix,
+    std::size_t prefix_syllables, std::size_t result_limit) const {
+    std::vector<DecodeResult> results;
+    std::unordered_set<std::string> dedup;
+    const bool constrained = !fixed_prefix.empty() || prefix_syllables > 0;
+
+    const auto tail = net.back().states.GetStates();
+    const std::size_t scan = std::min<std::size_t>(BeamSize, tail.size());
+    std::vector<DecodeResult> full;
+    std::unordered_set<std::string> full_seen;
+    for (std::size_t rank = 0; rank < scan; ++rank) {
+        auto path = Backtrace(tail[rank], net.size() - 1);
+        if (path.empty()) continue;
+        std::string text = ExtractText(path);
+        if (text.empty() || (constrained &&
+            (!text.starts_with(fixed_prefix) || text.size() <= fixed_prefix.size()))) {
+            continue;
+        }
+        std::string units = ExtractUnits(path, input);
+        if (constrained) {
+            std::size_t cut = 0;
+            for (std::size_t i = 0; i < prefix_syllables; ++i) {
+                const std::size_t quote = units.find('\'', cut);
+                if (quote == std::string::npos) { cut = units.size(); break; }
+                cut = quote + 1;
+            }
+            text.erase(0, fixed_prefix.size());
+            units = cut < units.size() ? units.substr(cut) : std::string{};
+        }
+        if (!full_seen.insert(text).second) continue;
+        full.push_back({std::move(text), std::move(units), ExtractTokens(path),
+                        -tail[rank].score, input.size()});
+    }
+    std::sort(full.begin(), full.end(), [](const DecodeResult& a,
+                                           const DecodeResult& b) {
+        return a.score > b.score;
+    });
+    RerankWithGru(full, gru_.get(), false);
+    for (std::size_t i = 0; i < full.size() && i < 1 + full_extra; ++i) {
+        dedup.insert(full[i].text);
+        results.push_back(std::move(full[i]));
+    }
+
+    while (layer2_col < input.size() && net[layer2_col].es.size() == 1 &&
+           net[layer2_col].es[0].id == NotToken) {
+        ++layer2_col;
+    }
+    if (layer2_col >= net.size()) return results;
+
+    const State initial = InitialState(context);
+    const float_t penalty_per_unit =
+        std::abs(scorer_.UnknownPenalty()) / DistancePenalty;
+    std::vector<DecodeResult> layer2;
+    std::unordered_map<std::string, std::size_t> index_by_text;
+    for (const auto& edge : net[layer2_col].es) {
+        if (edge.id == NotToken) continue;
+        std::u32string text_u32 = ToText(edge);
+        if (text_u32.empty()) continue;
+        std::string text = TextFromU32(text_u32);
+        if (dedup.contains(text)) continue;
+        Scorer::Pos next{};
+        const float_t score = -scorer_.ScoreMove(initial.pos, edge.id, next)
+            - edge.penalty
+            - static_cast<float_t>(input.size() - edge.end) * penalty_per_unit;
+        const auto slice = input.substr(edge.start, edge.end - edge.start);
+        std::string units = edge.pieces ? AbbreviatePieces(edge.pieces, slice) : "";
+        const std::size_t consumed = constrained
+            ? edge.end - layer2_col : edge.end;
+        PushBestLayer2Entry(layer2, index_by_text,
+            {std::move(text), std::move(units), ExtractTokens({edge}),
+             score, consumed});
+    }
+    std::sort(layer2.begin(), layer2.end(), [](const DecodeResult& a,
+                                               const DecodeResult& b) {
+        return a.score > b.score;
+    });
+    for (auto& candidate : layer2) {
+        if (result_limit > 0 && results.size() >= result_limit) break;
+        if (dedup.insert(candidate.text).second) {
+            results.push_back(std::move(candidate));
+        }
+    }
+    return results;
+}
+
 std::vector<DecodeResult> Sime::DecodeSentence(
     std::string_view input,
     std::size_t extra) const {
@@ -1230,8 +1318,6 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     std::string lower = NormalizeInput(input);
     if (lower.empty()) return results;
 
-    const std::size_t total = lower.size();
-
     std::vector<Node> net;
     InitNet(lower, net, /*expansion=*/true);
     ComputeEdgePenalties(net, lower);
@@ -1242,105 +1328,7 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     net[0].states.Insert(init);
     Process(net);
 
-    // `dedup` tracks texts already emitted in `results`; Layer 2 checks
-    // against it to avoid duplicating a candidate that made it into Layer 1.
-    // Layer 1 uses its own local dedup during beam scan so that beam members
-    // that don't make the final 1+extra cut remain eligible for Layer 2.
-    std::unordered_set<std::string> dedup;
-    const float_t penalty_per_unit =
-        std::abs(scorer_.UnknownPenalty()) / DistancePenalty;
-
-    // === Layer 1: Full sentence N-best ===
-    // Scan the whole beam, sort by score, take top (1 + extra).
-    // (penalties are already in beam scores via edge.penalty)
-    {
-        const auto tail = net.back().states.GetStates();
-        const std::size_t scan =
-            std::min<std::size_t>(BeamSize, tail.size());
-        std::vector<DecodeResult> l1;
-        l1.reserve(scan);
-        std::unordered_set<std::string> l1_seen;
-        for (std::size_t rank = 0; rank < scan; ++rank) {
-            auto path = Backtrace(tail[rank], net.size() - 1);
-            if (path.empty()) continue;
-            std::string text = ExtractText(path);
-            if (text.empty() || !l1_seen.insert(text).second) continue;
-            std::string py = ExtractUnits(path, lower);
-
-            l1.push_back({std::move(text), std::move(py),
-                          ExtractTokens(path),
-                          -tail[rank].score,
-                          input.size()});
-        }
-        std::sort(l1.begin(), l1.end(),
-                  [](const DecodeResult& a, const DecodeResult& b) {
-                      return a.score > b.score;
-                  });
-        RerankWithGru(l1, gru_.get(), false);
-        const std::size_t full_limit = 1 + extra;
-        for (std::size_t i = 0; i < l1.size() && results.size() < full_limit;
-             ++i) {
-            dedup.insert(l1[i].text);
-            results.push_back(std::move(l1[i]));
-        }
-    }
-
-    // === Layer 2: word/char alternatives at position 0 ===
-    // All entries (exact + expansion) compete on score; penalty is
-    // already in the score so no separate exact/abbrev tiering.
-    const std::size_t l2_start = results.size();
-    std::vector<DecodeResult> best_l2;
-    std::unordered_map<std::string, std::size_t> l2_index_by_text;
-
-    // Skip leading apostrophe-only columns (see DecodeNumSentence).
-    std::size_t l2_col = 0;
-    while (l2_col < total && net[l2_col].es.size() == 1 &&
-           net[l2_col].es[0].id == NotToken) {
-        ++l2_col;
-    }
-    for (const auto& edge : net[l2_col].es) {
-        if (edge.id == NotToken) continue;
-
-        std::u32string text_u32 = ToText(edge);
-        if (text_u32.empty()) continue;
-        std::string text_utf8 = TextFromU32(text_u32);
-        if (dedup.contains(text_utf8)) continue;
-
-        std::size_t distance = (total > edge.end) ? (total - edge.end) : 0;
-        float_t dist_penalty =
-            static_cast<float_t>(distance) * penalty_per_unit;
-
-        auto slice = std::string_view(lower).substr(
-            edge.start, edge.end - edge.start);
-
-        // Use edge.penalty (English + expansion) so L2 score is on the
-        // same coordinate system as L1: -(LM unigram + edge.penalty)
-        // - dist_penalty.
-        Scorer::Pos epos{};
-        Scorer::Pos enext{};
-        float_t score = -scorer_.ScoreMove(epos, edge.id, enext)
-                        - dist_penalty
-                        - edge.penalty;
-
-        std::string edge_py = edge.pieces
-            ? AbbreviatePieces(edge.pieces, slice)
-            : "";
-        PushBestLayer2Entry(
-            best_l2,
-            l2_index_by_text,
-            {std::move(text_utf8), std::move(edge_py),
-             ExtractTokens({edge}), score, edge.end});
-    }
-
-    for (auto& entry : best_l2) {
-        results.push_back(std::move(entry));
-    }
-    auto by_score = [](const DecodeResult& a, const DecodeResult& b) {
-        return a.score > b.score;
-    };
-    std::sort(results.begin() + l2_start, results.end(), by_score);
-
-    return results;
+    return CollectCandidates(net, lower, 0, context, extra);
 }
 
 std::vector<DecodeResult> Sime::DecodeCorrection(
@@ -1368,95 +1356,17 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     net[0].states.Insert(InitialState());
     Process(net);
 
-    std::unordered_set<std::string> seen;
-    // Layer 1 is the ordinary final-column beam, except that only paths whose
-    // emitted text starts with the fixed prefix are legal correction paths.
-    const auto tail = net.back().states.GetStates();
-    const std::size_t scan = std::min<std::size_t>(BeamSize, tail.size());
-    std::vector<DecodeResult> full;
-    std::unordered_set<std::string> full_seen;
-    for (std::size_t rank = 0; rank < scan; ++rank) {
-        auto path = Backtrace(tail[rank], net.size() - 1);
-        if (path.empty()) continue;
-        std::string text = ExtractText(path);
-        if (!text.starts_with(fixed_prefix) || text.size() <= fixed_prefix.size()) {
-            continue;
-        }
-        std::string units = ExtractUnits(path, lower);
-        std::size_t cut = 0;
-        for (std::size_t i = 0; i < prefix_syllables; ++i) {
-            const std::size_t quote = units.find('\'', cut);
-            if (quote == std::string::npos) { cut = units.size(); break; }
-            cut = quote + 1;
-        }
-        text.erase(0, fixed_prefix.size());
-        if (cut < units.size()) {
-            units.erase(0, cut);
-        } else {
-            units.clear();
-        }
-        if (!full_seen.insert(text).second) continue;
-        full.push_back({std::move(text), std::move(units),
-                        ExtractTokens(path), -tail[rank].score, input.size()});
-    }
-    std::sort(full.begin(), full.end(), [](const DecodeResult& a,
-                                           const DecodeResult& b) {
-        return a.score > b.score;
-    });
-    // Match iOS's existing DecodeSentence(extra: 2) behavior.
-    for (std::size_t i = 0; i < full.size() && i < 3; ++i) {
-        seen.insert(full[i].text);
-        results.push_back(std::move(full[i]));
-    }
-
-    // Layer 2 is the same edge enumeration as DecodeSentence, moved from
-    // column zero to the tapped syllable. Seed its LM state with the fixed
-    // text's tokenization, so words and characters are scored after it.
     std::vector<TokenID> context;
-    // Do not allocate the text segmenter's large dictionary index from a
-    // correction tap. Keyboard extensions have a tight memory budget; host
-    // context creates it during ordinary composition when available. A tap
-    // before that remains safe and uses the lattice prefix constraint alone.
+    // Reuse a previously initialized segmenter without allocating its large
+    // index on a correction tap inside the memory-constrained extension.
     if (cutter_) {
         for (const auto& token : cutter_->Cut(fixed_prefix)) {
             if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
         }
     }
-    const State prefix_state = InitialState(context);
-    while (correction_col < lower.size() &&
-           net[correction_col].es.size() == 1 &&
-           net[correction_col].es[0].id == NotToken) {
-        ++correction_col;
-    }
-    if (correction_col >= net.size()) return results;
-    const float_t penalty_per_unit =
-        std::abs(scorer_.UnknownPenalty()) / DistancePenalty;
-    std::vector<DecodeResult> short_results;
-    for (const auto& edge : net[correction_col].es) {
-        if (edge.id == NotToken) continue;
-        std::u32string text_u32 = ToText(edge);
-        if (text_u32.empty()) continue;
-        std::string text = TextFromU32(text_u32);
-        if (seen.contains(text)) continue;
-        Scorer::Pos next{};
-        const float_t score = -scorer_.ScoreMove(prefix_state.pos, edge.id, next)
-            - edge.penalty
-            - static_cast<float_t>(lower.size() - edge.end) * penalty_per_unit;
-        const auto slice = std::string_view(lower).substr(
-            edge.start, edge.end - edge.start);
-        std::string units = edge.pieces ? AbbreviatePieces(edge.pieces, slice) : "";
-        short_results.push_back({std::move(text), std::move(units),
-                                 ExtractTokens({edge}), score, edge.end - correction_col});
-    }
-    std::sort(short_results.begin(), short_results.end(),
-              [](const DecodeResult& a, const DecodeResult& b) {
-                  return a.score > b.score;
-              });
-    for (auto& entry : short_results) {
-        if (results.size() >= num) break;
-        if (seen.insert(entry.text).second) results.push_back(std::move(entry));
-    }
-    return results;
+    return CollectCandidates(net, lower, correction_col, context,
+                             /*full_extra=*/2, fixed_prefix,
+                             prefix_syllables, num);
 }
 
 std::vector<DecodeResult> Sime::NextTokens(
