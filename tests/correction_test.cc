@@ -73,5 +73,32 @@ int main() {
         }
         return EXIT_FAILURE;
     }
+
+    // A lone Shuangpin initial is an incomplete syllable; only expansion
+    // (tail completion) can offer candidates for it. Main decode therefore
+    // must keep expansion on — disabling it here left a bare initial with an
+    // empty candidate bar. Assert both directions so the boundary holds.
+    if (engine.DecodeSentence("n", 0, /*expansion=*/true).empty()) {
+        std::cerr << "expansion=true dropped lone-initial completion\n";
+        return EXIT_FAILURE;
+    }
+    if (!engine.DecodeSentence("n", 0, /*expansion=*/false).empty()) {
+        std::cerr << "expansion=false unexpectedly completed a lone initial\n";
+        return EXIT_FAILURE;
+    }
+
+    // A trailing initial mid-sentence must also complete: "wanq" (Shuangpin
+    // wj+q, i.e. wan + the initial of quan) should surface the word 完全 via
+    // expansion, and must not without it.
+    if (!ContainsText(engine.DecodeSentence("wanq", 8, /*expansion=*/true),
+                      "完全")) {
+        std::cerr << "expansion=true no longer completes wanq to 完全\n";
+        return EXIT_FAILURE;
+    }
+    if (ContainsText(engine.DecodeSentence("wanq", 8, /*expansion=*/false),
+                     "完全")) {
+        std::cerr << "expansion=false unexpectedly completed wanq to 完全\n";
+        return EXIT_FAILURE;
+    }
     return EXIT_SUCCESS;
 }
