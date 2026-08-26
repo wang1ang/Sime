@@ -70,17 +70,23 @@ public:
     std::vector<DecodeResult> DecodeStr(std::string_view input,
                                         std::size_t num = 5) const;
     std::vector<DecodeResult> DecodeSentence(std::string_view input,
-                                             std::size_t extra = 0) const;
+                                             std::size_t extra = 0,
+                                             bool expansion = true) const;
     std::vector<DecodeResult> DecodeSentence(
         std::string_view input,
         const std::vector<TokenID>& context,
-        std::size_t extra = 0) const;
+        std::size_t extra = 0,
+        bool expansion = true) const;
     // Candidate list for character correction. `fixed_prefix` is the UTF-8
     // text before the tapped syllable and stays unchanged; returned texts are
     // only the replaceable suffix. Long paths precede short/character paths.
+    // `expansion` enables abbreviation/tail completion (a full-pinyin
+    // convenience); Shuangpin passes false because every syllable is fully
+    // typed and its final is already locked.
     std::vector<DecodeResult> DecodeCorrection(
         std::string_view input, std::string_view fixed_prefix,
-        std::size_t prefix_syllables, std::size_t num = 60) const;
+        std::size_t prefix_syllables, std::size_t num = 60,
+        bool expansion = true) const;
     // Prediction: given confirmed token IDs as context, suggest next words.
     // When `en` is true, only English tokens are returned (for the English
     // IME's prediction slot); Chinese tokens are filtered out.

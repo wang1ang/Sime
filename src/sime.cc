@@ -1302,14 +1302,16 @@ std::vector<DecodeResult> Sime::CollectCandidates(
 
 std::vector<DecodeResult> Sime::DecodeSentence(
     std::string_view input,
-    std::size_t extra) const {
-    return DecodeSentence(input, {}, extra);
+    std::size_t extra,
+    bool expansion) const {
+    return DecodeSentence(input, {}, extra, expansion);
 }
 
 std::vector<DecodeResult> Sime::DecodeSentence(
     std::string_view input,
     const std::vector<TokenID>& context,
-    std::size_t extra) const {
+    std::size_t extra,
+    bool expansion) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty()) return results;
@@ -1319,7 +1321,7 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    InitNet(lower, net, /*expansion=*/true);
+    InitNet(lower, net, expansion);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
 
@@ -1333,7 +1335,7 @@ std::vector<DecodeResult> Sime::DecodeSentence(
 
 std::vector<DecodeResult> Sime::DecodeCorrection(
     std::string_view input, std::string_view fixed_prefix,
-    std::size_t prefix_syllables, std::size_t num) const {
+    std::size_t prefix_syllables, std::size_t num, bool expansion) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty() || num == 0) return results;
@@ -1349,7 +1351,7 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     }
 
     std::vector<Node> net;
-    InitNet(lower, net, /*expansion=*/true);
+    InitNet(lower, net, expansion);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
