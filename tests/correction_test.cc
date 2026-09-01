@@ -107,6 +107,13 @@ int main() {
         }
     }
 
+    // Full pinyin (no apostrophe) still abbreviation-expands: beij -> 北京.
+    if (!ContainsText(engine.DecodeSentence("beij", 8, /*expansion=*/true),
+                      "北京")) {
+        std::cerr << "beij no longer completes to 北京\n";
+        return EXIT_FAILURE;
+    }
+
     // A lone Shuangpin initial is an incomplete syllable; only expansion
     // (tail completion) can offer candidates for it. Main decode therefore
     // must keep expansion on — disabling it here left a bare initial with an
