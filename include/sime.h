@@ -178,7 +178,7 @@ private:
 
     // Beam search
     State InitialState(const std::vector<TokenID>& context = {}) const;
-    void Process(std::vector<Node>& net) const;
+    void Process(std::vector<Node>& net, bool keep_sep_context = false) const;
     static std::vector<Link> Backtrace(const State& tail_state,
                                        std::size_t end);
 

@@ -1216,7 +1216,7 @@ State Sime::InitialState(const std::vector<TokenID>& context) const {
     return State(0.0, 0, pos, nullptr, last);
 }
 
-void Sime::Process(std::vector<Node>& net) const {
+void Sime::Process(std::vector<Node>& net, bool keep_sep_context) const {
     for (std::size_t col = 0; col < net.size(); ++col) {
         auto& column = net[col];
         for (auto it = column.states.begin(); it != column.states.end(); ++it) {
@@ -1224,8 +1224,19 @@ void Sime::Process(std::vector<Node>& net) const {
             for (const auto& word : column.es) {
                 Scorer::Pos cur_pos = value.pos;
                 Scorer::Pos next_pos{};
-                float_t step = scorer_.ScoreMove(cur_pos, word.id, next_pos);
-                scorer_.Back(next_pos);
+                float_t step;
+                if (word.id == NotToken && keep_sep_context) {
+                    // Sentence mode: an apostrophe is only a syllable boundary,
+                    // so carry the n-gram context across it instead of resetting
+                    // (delimited li'zhou must score like lizhou -> 利州, and
+                    // neng'he'ma like nenghema -> 能喝吗). Correction keeps the
+                    // reset via the default (keep_sep_context = false).
+                    next_pos = cur_pos;
+                    step = 0.0;
+                } else {
+                    step = scorer_.ScoreMove(cur_pos, word.id, next_pos);
+                    scorer_.Back(next_pos);
+                }
                 cur_pos = next_pos;
 
                 float_t user_adjust = 0.0;
@@ -1392,7 +1403,7 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
     State init = InitialState(context);
     net[0].states.Insert(init);
-    Process(net);
+    Process(net, /*keep_sep_context=*/true);
 
     return CollectCandidates(net, lower, 0, context, extra);
 }
