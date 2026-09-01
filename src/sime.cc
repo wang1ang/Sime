@@ -983,9 +983,21 @@ void Sime::InitNet(std::string_view input,
         auto emit_results = [&](const std::vector<trie::SearchResult>& results,
                                 Dict::DatType type, bool en) {
             for (const auto& r : results) {
+                std::size_t end = s + r.length;
+                // In delimited mode (Shuangpin: one syllable per chunk), an
+                // exact pinyin edge must align to the apostrophe chunks: it may
+                // start only at a chunk start and end only at a chunk end. This
+                // stops a chunk being sub-segmented (pie -> pi + e, so
+                // "rong'yi'pie'jiao" stays 撇, not 被阿). Words spanning whole
+                // chunks (容易) still align. English edges are unaffected.
+                if (has_delim && !en) {
+                    bool start_ok = (s == 0) || (input[s - 1] == '\'');
+                    bool end_ok = (end == total) || (end < total && input[end] == '\'');
+                    if (!start_ok || !end_ok) continue;
+                }
                 auto entry = dict_.GetEntry(type, r.value);
                 for (uint32_t i = 0; i < entry.count; ++i) {
-                    emit(s, s + r.length, entry.items[i].id,
+                    emit(s, end, entry.items[i].id,
                          entry.items[i].pieces, en);
                 }
             }
