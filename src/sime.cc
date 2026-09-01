@@ -912,6 +912,13 @@ void Sime::InitNet(std::string_view input,
     const std::size_t total = input.size();
     net.clear();
     net.resize(total + 2);
+    // Delimited input (contains an apostrophe) means exact syllable
+    // boundaries (Shuangpin: one syllable per two keys). A known pinyin
+    // segment is then a completed syllable with a fixed final, so expansion
+    // must not start there (na must not lengthen to 南/南宁); only a fallback
+    // lone initial still expands. Full pinyin has no apostrophes and keeps
+    // the original abbreviation behavior (beij -> 北京).
+    const bool has_delim = input.find('\'') != std::string_view::npos;
 
     auto emit = [&](std::size_t s, std::size_t new_col,
                     TokenID tid, const char* pieces,
@@ -927,6 +934,7 @@ void Sime::InitNet(std::string_view input,
     // segments are also incomplete.
     std::vector<std::size_t> seg_bounds;
     std::vector<bool> seg_is_syllable;
+    std::vector<bool> seg_is_known;  // best >= 2: a known pinyin matched here
     {
         seg_bounds.push_back(0);
         std::size_t pos = 0;
@@ -935,6 +943,7 @@ void Sime::InitNet(std::string_view input,
                 ++pos;
                 seg_bounds.push_back(pos);
                 seg_is_syllable.push_back(false);
+                seg_is_known.push_back(false);
                 continue;
             }
             bool terminal = false;
@@ -951,6 +960,7 @@ void Sime::InitNet(std::string_view input,
             pos += best;
             seg_bounds.push_back(pos);
             seg_is_syllable.push_back(terminal);
+            seg_is_known.push_back(best >= 2);
         }
     }
 
@@ -993,6 +1003,9 @@ void Sime::InitNet(std::string_view input,
         for (std::size_t s_idx = 0; s_idx + 1 < seg_bounds.size(); ++s_idx) {
             std::size_t s = seg_bounds[s_idx];
             if (s >= total || input[s] == '\'') continue;
+            // In delimited mode, only a fallback lone initial may expand.
+            if (has_delim && s_idx < seg_is_known.size() && seg_is_known[s_idx])
+                continue;
 
             bool saw_incomplete = false;
             for (std::size_t bi = s_idx + 1; bi < seg_bounds.size(); ++bi) {

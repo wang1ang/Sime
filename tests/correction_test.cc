@@ -51,27 +51,60 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // Shuangpin feeds apostrophe-delimited units and disables expansion so a
-    // completed syllable's final stays locked. With expansion the decoder
-    // abbreviation-matches the locked "yu" to longer finals (石原/yuan,
-    // 十元/yuan); with expansion off those must disappear. Assert both
-    // directions so the flag can't silently become a no-op.
-    const auto expanded = engine.DecodeCorrection(
-        "shi'yu'shu'ru'fa", "", 0, 20, /*expansion=*/true);
-    if (!ContainsText(expanded, "原") && !ContainsText(expanded, "元")) {
-        std::cerr << "expansion=true no longer offers a lengthened final; "
-                     "the flag test is now vacuous\n";
-        return EXIT_FAILURE;
+    // Delimited input locks a completed final even with expansion on:
+    // expansion may only complete a trailing lone initial. So
+    // "shi'yu'shu'ru'fa" must not surface 石原/十元 (yu -> yuan) either way.
+    for (bool expansion : {true, false}) {
+        const auto results = engine.DecodeCorrection(
+            "shi'yu'shu'ru'fa", "", 0, 20, expansion);
+        if (ContainsText(results, "原") || ContainsText(results, "元")) {
+            std::cerr << "delimited final leaked a lengthened reading (expansion="
+                      << expansion << "):\n";
+            for (const auto& candidate : results) {
+                std::cerr << "  " << candidate.text << '\n';
+            }
+            return EXIT_FAILURE;
+        }
     }
 
-    const auto locked = engine.DecodeCorrection(
-        "shi'yu'shu'ru'fa", "", 0, 20, /*expansion=*/false);
-    if (ContainsText(locked, "原") || ContainsText(locked, "元")) {
-        std::cerr << "expansion=false leaked a lengthened final:\n";
-        for (const auto& candidate : locked) {
-            std::cerr << "  " << candidate.text << '\n';
+    // A delimited completed syllable is never merged with a following lone
+    // initial nor lengthened, though its pinyin (na/he/xi) is extendable.
+    //   na'n     : never merged 南/南宁
+    //   nenghe'm : 能喝吗 ok, never 能黑马 (he -> hei)
+    //   xi'h     : never 先 (xi -> xian)
+    {
+        const auto na = engine.DecodeSentence("na'n", 8, /*expansion=*/true);
+        // 南 is a valid rare "na" reading (南无), so a single 南 is fine; the
+        // bug was "na" lengthened to "nan" (merged 南, or the word 南宁).
+        for (const auto& c : na) {
+            auto apos = c.units.find('\'');
+            std::string first =
+                apos == std::string::npos ? c.units : c.units.substr(0, apos);
+            if (first == "nan") {
+                std::cerr << "na'n lengthened the locked \"na\" to \"nan\": "
+                          << c.text << " [" << c.units << "]\n";
+                return EXIT_FAILURE;
+            }
         }
-        return EXIT_FAILURE;
+        if (ContainsText(na, "南宁")) {
+            std::cerr << "na'n abbreviation-matched the word 南宁 (nanning)\n";
+            return EXIT_FAILURE;
+        }
+        const auto neng = engine.DecodeSentence("nenghe'm", 8, /*expansion=*/true);
+        if (neng.empty() || ContainsText(neng, "黑")) {
+            std::cerr << "nenghe'm leaked a lengthened final (黑) or was empty\n";
+            return EXIT_FAILURE;
+        }
+        // Legal pinyin hen+he+ma (很喝吗) must still yield candidates.
+        if (engine.DecodeSentence("henhe'm", 8, /*expansion=*/true).empty()) {
+            std::cerr << "henhe'm produced no candidates\n";
+            return EXIT_FAILURE;
+        }
+        const auto xi = engine.DecodeSentence("xi'h", 8, /*expansion=*/true);
+        if (ContainsText(xi, "先")) {
+            std::cerr << "xi'h abbreviation-rewrote the locked \"xi\" to xian (先)\n";
+            return EXIT_FAILURE;
+        }
     }
 
     // A lone Shuangpin initial is an incomplete syllable; only expansion
