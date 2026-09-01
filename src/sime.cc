@@ -913,11 +913,9 @@ void Sime::InitNet(std::string_view input,
     net.clear();
     net.resize(total + 2);
     // Delimited input (contains an apostrophe) means exact syllable
-    // boundaries (Shuangpin: one syllable per two keys). A known pinyin
-    // segment is then a completed syllable with a fixed final, so expansion
-    // must not start there (na must not lengthen to 南/南宁); only a fallback
-    // lone initial still expands. Full pinyin has no apostrophes and keeps
-    // the original abbreviation behavior (beij -> 北京).
+    // boundaries (Shuangpin). Used below to filter expansion words so a
+    // completed syllable's final can't be lengthened. Full pinyin is
+    // unfiltered (beij -> 北京).
     const bool has_delim = input.find('\'') != std::string_view::npos;
 
     auto emit = [&](std::size_t s, std::size_t new_col,
@@ -1000,12 +998,38 @@ void Sime::InitNet(std::string_view input,
     // it drops fuzzy states. English tail completion fires per boundary
     // if any non-terminal segment remains in the suffix.
     if (expansion) {
+        // In delimited mode (Shuangpin), a completed known syllable's final is
+        // fixed: an expansion word may match it only exactly, and may prefix-
+        // extend just a fallback (incomplete) initial. This keeps aligned
+        // completions (hami'g -> 哈密瓜) while rejecting ones that lengthen a
+        // locked final (na'n -> 南宁, nenghe'm -> 能黑马). Full pinyin has no
+        // apostrophe and is unfiltered.
+        auto aligned = [&](const char* pieces, std::size_t s_idx_lo,
+                           std::size_t bi_hi) -> bool {
+            if (!has_delim || pieces == nullptr) return true;
+            std::string_view word(pieces);
+            std::size_t wp = 0;  // walk word syllables
+            for (std::size_t k = s_idx_lo; k < bi_hi; ++k) {
+                std::size_t b = seg_bounds[k];
+                if (input[b] == '\'') continue;  // input boundary marker
+                std::string_view seg =
+                    input.substr(b, seg_bounds[k + 1] - b);
+                if (wp > word.size()) return false;
+                std::size_t wend = word.find('\'', wp);
+                std::string_view wsyl = word.substr(
+                    wp, (wend == std::string_view::npos ? word.size() : wend) - wp);
+                if (seg_is_known[k]) {
+                    if (wsyl != seg) return false;      // locked final: exact
+                } else {
+                    if (wsyl.substr(0, seg.size()) != seg) return false;  // prefix
+                }
+                wp = (wend == std::string_view::npos) ? word.size() : wend + 1;
+            }
+            return true;
+        };
         for (std::size_t s_idx = 0; s_idx + 1 < seg_bounds.size(); ++s_idx) {
             std::size_t s = seg_bounds[s_idx];
             if (s >= total || input[s] == '\'') continue;
-            // In delimited mode, only a fallback lone initial may expand.
-            if (has_delim && s_idx < seg_is_known.size() && seg_is_known[s_idx])
-                continue;
 
             bool saw_incomplete = false;
             for (std::size_t bi = s_idx + 1; bi < seg_bounds.size(); ++bi) {
@@ -1023,6 +1047,7 @@ void Sime::InitNet(std::string_view input,
                 for (const auto& r : results) {
                     auto entry = dict_.GetEntry(Dict::LetterPinyin, r.value);
                     for (uint32_t i = 0; i < entry.count; ++i) {
+                        if (!aligned(entry.items[i].pieces, s_idx, bi)) continue;
                         net[s].es.push_back({s, target, entry.items[i].id,
                                              entry.items[i].pieces, 0, true,
                                              false});

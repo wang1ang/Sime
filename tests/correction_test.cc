@@ -114,6 +114,15 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // A delimited word completion whose head syllables match exactly and
+    // whose only extension is the trailing initial must survive: hami'g
+    // (ha + mi + the initial of gua) -> 哈密瓜.
+    if (!ContainsText(engine.DecodeSentence("hami'g", 8, /*expansion=*/true),
+                      "哈密瓜")) {
+        std::cerr << "hami'g no longer completes to 哈密瓜\n";
+        return EXIT_FAILURE;
+    }
+
     // A lone Shuangpin initial is an incomplete syllable; only expansion
     // (tail completion) can offer candidates for it. Main decode therefore
     // must keep expansion on — disabling it here left a bare initial with an
