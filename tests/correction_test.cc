@@ -123,6 +123,22 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // A lone trailing retroflex initial (zh/ch/sh) is ONE incomplete syllable
+    // and completes to exactly one: kuangquan'sh -> 矿泉水, never split into
+    // s + h (矿全社会) nor spilled into an extra syllable (矿泉水厂).
+    {
+        const auto r = engine.DecodeSentence("kuangquan'sh", 8, /*expansion=*/true);
+        if (!ContainsText(r, "矿泉水")) {
+            std::cerr << "kuangquan'sh no longer completes to 矿泉水\n";
+            return EXIT_FAILURE;
+        }
+        if (ContainsText(r, "社会") || ContainsText(r, "厂")) {
+            std::cerr << "kuangquan'sh spilled a lone initial into extra syllables:\n";
+            for (const auto& c : r) std::cerr << "  " << c.text << '\n';
+            return EXIT_FAILURE;
+        }
+    }
+
     // A lone Shuangpin initial is an incomplete syllable; only expansion
     // (tail completion) can offer candidates for it. Main decode therefore
     // must keep expansion on — disabling it here left a bare initial with an

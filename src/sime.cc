@@ -945,6 +945,7 @@ void Sime::InitNet(std::string_view input,
                 continue;
             }
             bool terminal = false;
+            bool known = false;
             std::size_t best = 1;
             for (std::size_t len = std::min(total - pos, std::size_t(6));
                  len >= 2; --len) {
@@ -952,13 +953,22 @@ void Sime::InitNet(std::string_view input,
                 if (Dict::IsKnownPinyin(p)) {
                     best = len;
                     terminal = !Dict::IsExtendablePinyin(p);
+                    known = true;
                     break;
                 }
+            }
+            // A retroflex initial (zh/ch/sh) with no full syllable is ONE
+            // incomplete syllable, not two single-letter initials, so a lone
+            // trailing "sh" completes to exactly one syllable (水), never
+            // s + h -> 社会.
+            if (!known && pos + 2 <= total) {
+                std::string_view two = input.substr(pos, 2);
+                if (two == "zh" || two == "ch" || two == "sh") best = 2;
             }
             pos += best;
             seg_bounds.push_back(pos);
             seg_is_syllable.push_back(terminal);
-            seg_is_known.push_back(best >= 2);
+            seg_is_known.push_back(known);
         }
     }
 
@@ -1025,6 +1035,10 @@ void Sime::InitNet(std::string_view input,
                 }
                 wp = (wend == std::string_view::npos) ? word.size() : wend + 1;
             }
+            // No extra word syllables: a lone trailing initial completes
+            // exactly one syllable, never spilling into more (sh must not
+            // become shui'chang, so kdqru is 矿泉水, not 矿泉水厂).
+            if (wp < word.size()) return false;
             return true;
         };
         for (std::size_t s_idx = 0; s_idx + 1 < seg_bounds.size(); ++s_idx) {
