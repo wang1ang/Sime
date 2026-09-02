@@ -176,11 +176,12 @@ private:
     const ArrayUnit* array_ = nullptr;
     std::unique_ptr<ArrayUnit[]> owned_;
     std::vector<uint8_t> alphabet_;  // distinct labels in the trie
-    // Lazy cache of FindSepDescendants(pos, …, 6). Hot path: ~21M hits per
-    // num-decode sentence batch. Direct vector index beats std::unordered_map
-    // hash+bucket walk.
-    mutable std::vector<std::vector<std::size_t>> sep_cache_;
-    mutable std::vector<bool> sep_cache_computed_;
+    // Lazy cache of FindSepDescendants(pos, …, 6). Stored sparsely: a dense
+    // vector sized to the whole trie (size_) costs tens of MB of dirty memory
+    // on large dicts (fatal under the iOS keyboard's ~77MB limit), and
+    // freeing it never returns pages to the OS. Only touched positions are
+    // kept here, bounding the footprint to the working set.
+    mutable std::unordered_map<std::size_t, std::vector<std::size_t>> sep_cache_;
 
     // --- Builder (used only during Build) ---
     struct TrieNode {

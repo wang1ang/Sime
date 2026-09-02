@@ -518,29 +518,22 @@ void DoubleArray::FindSepDescendants(std::size_t pos,
 }
 
 void DoubleArray::ClearSepCache() const {
-    for (auto& v : sep_cache_) {
-        std::vector<std::size_t>().swap(v);  // free inner buffers
-    }
-    std::fill(sep_cache_computed_.begin(),
-              sep_cache_computed_.end(), false);
+    sep_cache_.clear();
 }
 
 void DoubleArray::ResetSepCache() const {
-    std::vector<std::vector<std::size_t>>().swap(sep_cache_);
-    std::vector<bool>().swap(sep_cache_computed_);
+    std::unordered_map<std::size_t, std::vector<std::size_t>>().swap(sep_cache_);
 }
 
 const std::vector<std::size_t>& DoubleArray::GetSepDescendants(
     std::size_t pos) const {
-    if (sep_cache_computed_.size() <= pos) {
-        sep_cache_.resize(size_);
-        sep_cache_computed_.resize(size_, false);
-    }
-    if (!sep_cache_computed_[pos]) {
-        FindSepDescendants(pos, sep_cache_[pos], 6);
-        sep_cache_computed_[pos] = true;
-    }
-    return sep_cache_[pos];
+    auto it = sep_cache_.find(pos);
+    if (it != sep_cache_.end()) return it->second;
+    // FindSepDescendants only writes `out` and recurses on itself; it never
+    // touches sep_cache_, so this reference stays valid across the call.
+    auto& out = sep_cache_[pos];
+    FindSepDescendants(pos, out, 6);
+    return out;
 }
 
 void DoubleArray::AdvancePinyin(std::vector<PinyinState>& states,
