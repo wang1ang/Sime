@@ -1504,6 +1504,106 @@ std::vector<DecodeResult> Sime::NextTokens(
     return results;
 }
 
+static std::size_t U32Len(const char32_t* p) {
+    std::size_t n = 0;
+    while (p && p[n]) ++n;
+    return n;
+}
+
+static bool IsAssocPunct(const char32_t* s) {
+    if (!s || s[0] == 0) return true;
+    char32_t c = s[0];
+    if (c < 0x80) {
+        return !((c >= U'a' && c <= U'z') || (c >= U'A' && c <= U'Z') ||
+                 (c >= U'0' && c <= U'9'));
+    }
+    if (c >= 0x3000 && c <= 0x303F) return true;   // CJK symbols & punctuation
+    if (c >= 0xFF00 && c <= 0xFF0F) return true;   // fullwidth ASCII punct
+    if (c >= 0xFF1A && c <= 0xFF20) return true;   // fullwidth : ; < = > ? @
+    if (c == 0x00B7 || c == 0x2014 || c == 0x2026) return true;
+    return false;
+}
+
+std::vector<DecodeResult> Sime::Associate(
+    const std::vector<TokenID>& context,
+    std::size_t num) const {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    std::vector<DecodeResult> out;
+    if (!ready_ || num == 0 || context.empty()) return out;
+    MaybeTrimCaches();
+
+    const auto tail = static_cast<std::size_t>(std::max(scorer_.Num() - 1, 1));
+    auto cost_given = [&](const std::vector<TokenID>& hist, TokenID w) -> float_t {
+        Scorer::Pos pos{};
+        std::size_t s = hist.size() > tail ? hist.size() - tail : 0;
+        for (std::size_t i = s; i < hist.size(); ++i) {
+            Scorer::Pos n{};
+            scorer_.ScoreMove(pos, hist[i], n);
+            pos = n;
+        }
+        Scorer::Pos r{};
+        return scorer_.ScoreMove(pos, w, r);
+    };
+
+    struct Cand { float_t cost; DecodeResult r; };
+    std::vector<Cand> cands;
+    std::unordered_set<std::string> seen;
+
+    // ① next-word: likely token following the full context.
+    {
+        Scorer::Pos pos{};
+        std::size_t s = context.size() > tail ? context.size() - tail : 0;
+        for (std::size_t i = s; i < context.size(); ++i) {
+            Scorer::Pos n{};
+            scorer_.ScoreMove(pos, context[i], n);
+            pos = n;
+        }
+        for (const auto& [tid, pro] : scorer_.NextTokens(pos, num * 6)) {
+            if (tid < StartToken) continue;
+            const char32_t* chars = dict_.TokenAt(tid);
+            if (IsAssocPunct(chars)) continue;
+            std::u32string u32(chars, chars + U32Len(chars));
+            std::string text = TextFromU32(u32);
+            if (!seen.insert(text).second) continue;
+            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0}});
+        }
+    }
+
+    // ② completion: dict words whose text starts with the trailing token.
+    {
+        TokenID last = context.back();
+        const char32_t* head = dict_.TokenAt(last);
+        if (head && head[0] != 0 && !IsAssocPunct(head)) {
+            const std::size_t head_len = U32Len(head);
+            std::vector<TokenID> prev(context.begin(), context.end() - 1);
+            const float_t base = cost_given(prev, last);
+            const uint32_t count = dict_.TokenCount();
+            for (uint32_t id = StartToken; id < count; ++id) {
+                const char32_t* w = dict_.TokenAt(id);
+                if (!w || w[0] == 0) continue;
+                std::size_t k = 0;
+                for (; k < head_len && w[k] != 0; ++k)
+                    if (w[k] != head[k]) break;
+                if (k != head_len || w[head_len] == 0) continue;  // not a strict extension
+                if (IsAssocPunct(w + head_len)) continue;         // tail starts with punct
+                const float_t cost = cost_given(prev, id) - base;
+                std::u32string u32(w, w + U32Len(w));
+                std::string text = TextFromU32(u32);
+                if (!seen.insert(text).second) continue;
+                cands.push_back({cost,
+                    {std::move(text), {}, {id}, -cost, head_len}});
+            }
+        }
+    }
+
+    std::sort(cands.begin(), cands.end(),
+              [](const Cand& a, const Cand& b) { return a.cost < b.cost; });
+    if (cands.size() > num) cands.resize(num);
+    out.reserve(cands.size());
+    for (auto& c : cands) out.push_back(std::move(c.r));
+    return out;
+}
+
 std::vector<DecodeResult> Sime::GetTokens(
     std::string_view prefix,
     std::size_t num,

@@ -95,6 +95,21 @@ public:
         std::size_t num = 10,
         bool en = false) const;
 
+    // Association (联想): merges next-word prediction with word completion
+    // of the trailing context token, both scored on the same LM cost scale
+    // (smaller cost = better; returned `score` = -cost, larger is better).
+    //   ① next-word: likely token X following the full context.
+    //   ② completion: dict words W whose text starts with the trailing
+    //      token's text, scored by the incremental cost of upgrading that
+    //      trailing token into W.
+    // For each result, `cnt` is the number of leading CJK characters already
+    // present in the document (0 for next-word; = char length of the trailing
+    // token's text for completions), so the caller inserts `text` with its
+    // first `cnt` characters dropped.
+    std::vector<DecodeResult> Associate(
+        const std::vector<TokenID>& context,
+        std::size_t num = 10) const;
+
     // Prefix completion: return tokens starting with `prefix`, sorted by
     // unigram score. Default searches both English and pinyin DATs (mixed
     // mode). When `en` is true, only the English DAT is searched.
