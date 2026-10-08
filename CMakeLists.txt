@@ -77,12 +77,20 @@ if(SIME_BUILD_TOOLS)
     add_executable(sime-compact ${NEW_ROOT}/bin/compact.cc)
     target_link_libraries(sime-compact PRIVATE sime_core)
 
+    add_executable(sime-spbuild ${NEW_ROOT}/bin/spbuild.cc)
+    target_link_libraries(sime-spbuild PRIVATE sime_core)
+
+    add_executable(sime-sptry ${NEW_ROOT}/bin/sptry.cc)
+    target_link_libraries(sime-sptry PRIVATE sime_core)
+
     set(_sime_targets
         sime-count
         sime-construct
         sime-converter
         sime-dump
         sime-compact
+        sime-spbuild
+        sime-sptry
         #sime-cut
         sime
     )

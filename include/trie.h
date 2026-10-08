@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -49,6 +50,41 @@ public:
 
     // Exact match.
     bool Get(std::string_view key, uint32_t& out) const;
+
+    // Enumerate every (key, value) in the trie. Header-inline so offline tools
+    // can re-key an existing index without touching the core .cc.
+    void ForEachKey(
+        const std::function<void(const std::string&, uint32_t)>& fn) const {
+        if (Empty()) return;
+        // Iterative DFS: `word` holds the path; it is truncated back to a
+        // node's pre-edge length once that subtree is exhausted.
+        struct Frame { std::size_t pos; std::size_t alpha; std::size_t word_len; };
+        std::vector<Frame> stack;
+        std::string word;
+        stack.push_back({0, 0, 0});
+        while (!stack.empty()) {
+            Frame& f = stack.back();
+            if (f.alpha == 0 && array_[f.pos].eow) {
+                std::size_t vp = f.pos ^ array_[f.pos].index;
+                if (vp < size_ && array_[vp].HasValue())
+                    fn(word, static_cast<uint32_t>(array_[vp].value));
+            }
+            if (f.alpha >= alphabet_.size()) {
+                word.resize(f.word_len);
+                stack.pop_back();
+                continue;
+            }
+            uint8_t ch = alphabet_[f.alpha++];
+            uint32_t base = array_[f.pos].index;
+            std::size_t child = f.pos ^ base ^ static_cast<unsigned>(ch);
+            if (child >= size_ || child == f.pos) continue;
+            if (array_[child].label != ch || array_[child].parent != f.pos)
+                continue;
+            std::size_t parent_len = word.size();
+            word.push_back(static_cast<char>(ch));
+            stack.push_back({child, 0, parent_len});
+        }
+    }
 
     // All keys that are prefixes of `str`.
     std::vector<SearchResult> PrefixSearch(std::string_view str,
