@@ -19,17 +19,26 @@ class Cutter;
 
 struct DecodeResult {
     std::string text;        // UTF-8 display text (▁ prefix stripped)
-    std::string units;       // segmented pinyin (e.g. "ni'hao")
+    std::string units;       // segmented pinyin (e.g. "ni'hao"); empty on the shuangpin path
     std::vector<TokenID> tokens;  // token IDs for LM context
     float_t score = 0.0;    // larger is better (negative log probability negated)
     std::size_t cnt = 0;     // bytes of input consumed
+    // Shuangpin UI spans: one entry per tappable Han character, or one whole
+    // English/unaligned decoder segment. Key lengths come from the chosen path;
+    // callers need not infer boundaries from text length or a fixed key count.
+    std::vector<std::size_t> segment_keys;
+    std::vector<std::size_t> segment_chars;
 };
 
 class Sime {
 public:
     Sime() = default;
+    // A non-empty sp_index_path binds the engine to the shuangpin path: input
+    // is raw shuangpin keystrokes, segmented by the prebuilt index. Requesting
+    // it but failing to load leaves the engine not-ready (caller may fall back).
     Sime(const std::filesystem::path& dict_path,
-         const std::filesystem::path& model_path);
+         const std::filesystem::path& model_path,
+         const std::filesystem::path& sp_index_path = {});
     ~Sime();
 
     bool Ready() const { return ready_; }
@@ -186,6 +195,11 @@ private:
     void InitNet(std::string_view input,
                     std::vector<Node>& net,
                     bool expansion = true) const;
+    // Shuangpin lattice: `raw` is raw keystrokes, segmented into fixed 2-key
+    // syllables via sp_index_ (no full-pinyin conversion, no apostrophes).
+    void InitNetSp(std::string_view raw,
+                   std::vector<Node>& net,
+                   bool expansion = true) const;
     static void ComputeEdgePenalties(std::vector<Node>& net,
                                      std::string_view input);
     void PruneNode(std::vector<Link>& edges,
@@ -204,6 +218,12 @@ private:
     static std::string AbbreviatePieces(const char* full_pieces,
                                         std::string_view input);
     std::vector<TokenID> ExtractTokens(const std::vector<Link>& path) const;
+    // Decoder-supplied raw-key and display-character spans for a chosen path.
+    void ExtractSegments(const std::vector<Link>& path,
+                         std::string_view input,
+                         std::vector<std::size_t>& keys,
+                         std::vector<std::size_t>& chars,
+                         std::size_t skip_chars = 0) const;
     static std::string TextFromU32(std::u32string& u32);
     std::vector<DecodeResult> CollectCandidates(
         const std::vector<Node>& net, std::string_view input,
@@ -217,6 +237,11 @@ private:
                      std::string_view nums,
                      std::vector<Node>& net,
                      bool expansion = true) const;
+
+    // mmap the prebuilt shuangpin index (bare DoubleArray). Zero-copy, so the
+    // mapping outlives the engine (iOS ~77MB budget rules out a heap copy).
+    bool LoadShuangpinIndex(const std::filesystem::path& path);
+    bool HasShuangpinIndex() const { return has_sp_index_; }
 
     // Periodic soft trim of trie sep_cache, called from decode entries.
     // Drops cached sep lists every kSepCacheTrimInterval decodes so the
@@ -232,6 +257,12 @@ private:
 
     // Resources
     Dict dict_;
+    // Shuangpin index: keys = raw shuangpin codes, values = the same values the
+    // dict's LetterPinyin trie stores, so words resolve via dict_.GetEntry.
+    trie::DoubleArray sp_index_;
+    void* sp_mmap_addr_ = nullptr;
+    std::size_t sp_mmap_len_ = 0;
+    bool has_sp_index_ = false;
     Scorer scorer_;
     UserSentence user_sentence_;
     std::string vocab_sig_;

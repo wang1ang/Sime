@@ -50,7 +50,8 @@ if(BUILD_TESTING)
     target_link_libraries(sime-correction-test PRIVATE sime_core)
     target_compile_definitions(sime-correction-test PRIVATE
         SIME_TEST_DICT="${NEW_ROOT}/save/sime.dict"
-        SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt")
+        SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt"
+        SIME_TEST_SP_INDEX="${NEW_ROOT}/save/sime.sp.index")
     add_test(NAME sime-correction COMMAND sime-correction-test)
 endif()
 

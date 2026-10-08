@@ -14,6 +14,11 @@
 #include <unordered_set>
 #include <utility>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace sime {
 
 namespace {
@@ -98,12 +103,20 @@ void Sime::ResetCaches() const {
 }
 
 Sime::Sime(const std::filesystem::path& dict_path,
-                         const std::filesystem::path& model_path) {
+                         const std::filesystem::path& model_path,
+                         const std::filesystem::path& sp_index_path) {
     if (!dict_.Load(dict_path)) {
         return;
     }
     if (!scorer_.Load(model_path)) {
         dict_.Clear();
+        return;
+    }
+    // A requested-but-failed shuangpin index is fatal: the caller asked for
+    // that path and must learn to fall back rather than silently decode wrong.
+    if (!sp_index_path.empty() && !LoadShuangpinIndex(sp_index_path)) {
+        dict_.Clear();
+        scorer_.Reset();
         return;
     }
     vocab_sig_ = MakeVocabSignature(dict_path, model_path);
@@ -112,7 +125,35 @@ Sime::Sime(const std::filesystem::path& dict_path,
     ready_ = true;
 }
 
-Sime::~Sime() = default;
+Sime::~Sime() {
+    if (sp_mmap_addr_ && sp_mmap_addr_ != MAP_FAILED) {
+        munmap(sp_mmap_addr_, sp_mmap_len_);
+    }
+}
+
+bool Sime::LoadShuangpinIndex(const std::filesystem::path& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) { close(fd); return false; }
+    const auto size = static_cast<std::size_t>(st.st_size);
+    if (size < sizeof(uint32_t)) { close(fd); return false; }
+
+    void* addr = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (addr == MAP_FAILED) return false;
+
+    // Bare DoubleArray::Serialize layout: 4-byte size prefix + ArrayUnit array.
+    if (!sp_index_.MmapAttach(static_cast<const char*>(addr), size)) {
+        munmap(addr, size);
+        return false;
+    }
+    sp_mmap_addr_ = addr;
+    sp_mmap_len_ = size;
+    has_sp_index_ = true;
+    return true;
+}
 
 bool Sime::GruReady() const {
     return gru_ && gru_->Ready();
@@ -656,6 +697,88 @@ std::vector<TokenID> Sime::ExtractTokens(
     return ids;
 }
 
+void Sime::ExtractSegments(const std::vector<Link>& path,
+                           std::string_view input,
+                           std::vector<std::size_t>& keys,
+                           std::vector<std::size_t>& chars,
+                           std::size_t skip_chars) const {
+    keys.clear();
+    chars.clear();
+    for (const auto& link : path) {
+        if (link.id == NotToken) continue;
+        const std::size_t char_count = ToText(link).size();
+        if (char_count == 0) continue;
+        const std::size_t key_count = link.end - link.start;
+        auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
+            if (skip_chars >= span_chars) {
+                skip_chars -= span_chars;
+                return;
+            }
+            if (skip_chars > 0) {
+                // An unaligned decoder segment cannot be split at this prefix.
+                // Preserve its true span rather than inventing character keys.
+                skip_chars = 0;
+            }
+            keys.push_back(span_keys);
+            chars.push_back(span_chars);
+        };
+        if (!link.english && link.pieces && char_count > 1) {
+            std::vector<std::string_view> syllables;
+            const std::string_view pieces(link.pieces);
+            std::size_t start = 0;
+            while (start <= pieces.size()) {
+                const std::size_t end = pieces.find('\'', start);
+                const auto syllable = pieces.substr(
+                    start, end == std::string_view::npos
+                               ? std::string_view::npos : end - start);
+                if (!syllable.empty()) syllables.push_back(syllable);
+                if (end == std::string_view::npos) break;
+                start = end + 1;
+            }
+
+            const auto source = input.substr(link.start, key_count);
+            std::vector<std::size_t> spans(syllables.size());
+            auto has_piece = [&](uint32_t value, std::string_view syllable) {
+                const auto entry = dict_.GetEntry(Dict::LetterPinyin, value);
+                for (uint32_t i = 0; i < entry.count; ++i) {
+                    const char* candidate = entry.items[i].pieces;
+                    if (candidate && syllable == candidate) return true;
+                }
+                return false;
+            };
+            std::function<bool(std::size_t, std::size_t)> align =
+                [&](std::size_t syllable_index, std::size_t key_offset) {
+                    if (syllable_index == syllables.size()) {
+                        return key_offset == source.size();
+                    }
+                    const bool trailing_syllable =
+                        syllable_index + 1 == syllables.size();
+                    for (std::size_t end = key_offset + 1;
+                         end <= source.size(); ++end) {
+                        const auto code = source.substr(key_offset, end - key_offset);
+                        uint32_t value = 0;
+                        const bool exact = sp_index_.Get(code, value) &&
+                            has_piece(value, syllables[syllable_index]);
+                        if (!exact && trailing_syllable && end == source.size()) {
+                            spans[syllable_index] = end - key_offset;
+                            if (align(syllable_index + 1, end)) return true;
+                        }
+                        if (!exact) continue;
+                        spans[syllable_index] = end - key_offset;
+                        if (align(syllable_index + 1, end)) return true;
+                    }
+                    return false;
+                };
+
+            if (syllables.size() == char_count && align(0, 0)) {
+                for (const std::size_t span : spans) append_span(span, 1);
+                continue;
+            }
+        }
+        append_span(key_count, char_count);
+    }
+}
+
 std::vector<DecodeResult> Sime::DecodeNumSentence(
     std::string_view nums,
     std::string_view start,
@@ -717,7 +840,7 @@ std::vector<DecodeResult> Sime::DecodeNumSentence(
 
             l1.push_back({std::move(text), std::move(py),
                           ExtractTokens(path),
-                          -tail[rank].score, full_cnt});
+                          -tail[rank].score, full_cnt, {}, {}});
         }
         std::sort(l1.begin(), l1.end(),
                   [](const DecodeResult& a, const DecodeResult& b) {
@@ -780,7 +903,7 @@ std::vector<DecodeResult> Sime::DecodeNumSentence(
             best_l2,
             l2_index_by_text,
             {std::move(text_utf8), std::move(edge_py),
-             ExtractTokens({edge}), score, cnt});
+             ExtractTokens({edge}), score, cnt, {}, {}});
     }
 
     for (auto& entry : best_l2) {
@@ -836,7 +959,7 @@ std::vector<DecodeResult> Sime::DecodeNumStr(
         results.push_back({std::move(text), std::move(py),
                            ExtractTokens(path),
                            -tail_states[rank].score,
-                           start.size() + nums.size()});
+                           start.size() + nums.size(), {}, {}});
     }
 
     return results;
@@ -872,11 +995,15 @@ std::vector<DecodeResult> Sime::DecodeStr(
     if (!ready_ || input.empty()) return results;
     MaybeTrimCaches();
 
-    std::string lower = NormalizeInput(input);
+    // Shuangpin: input is raw keystrokes (may include ';'); use verbatim.
+    // NormalizeInput would strip ';' and other non-letters, so skip it.
+    std::string lower = has_sp_index_ ? std::string(input)
+                                      : NormalizeInput(input);
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    InitNet(lower, net, /*expansion=*/false);
+    if (has_sp_index_) InitNetSp(lower, net, /*expansion=*/false);
+    else InitNet(lower, net, /*expansion=*/false);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
 
@@ -898,10 +1025,17 @@ std::vector<DecodeResult> Sime::DecodeStr(
         if (path.empty()) continue;
         std::string text = ExtractText(path);
         if (text.empty() || !dedup.insert(text).second) continue;
-        std::string py = ExtractUnits(path, lower);
-        results.push_back({std::move(text), std::move(py),
-                           ExtractTokens(path),
-                           -tail_states[rank].score, input.size()});
+        // Shuangpin path carries no full-pinyin units; it reports per-segment
+        // raw-key/char spans of the chosen path instead.
+        DecodeResult r;
+        r.text = std::move(text);
+        r.units = has_sp_index_ ? std::string{} : ExtractUnits(path, lower);
+        r.tokens = ExtractTokens(path);
+        r.score = -tail_states[rank].score;
+        r.cnt = input.size();
+        if (has_sp_index_) ExtractSegments(path, lower, r.segment_keys,
+                                           r.segment_chars);
+        results.push_back(std::move(r));
     }
     return results;
 }
@@ -1131,6 +1265,111 @@ void Sime::InitNet(std::string_view input,
     net[total].es.push_back({total, total + 1, NotToken});
 }
 
+void Sime::InitNetSp(std::string_view raw,
+                     std::vector<Node>& net,
+                     bool expansion) const {
+    // A syllable is exactly 2 raw keys relative to the start of a Shuangpin
+    // run. Start at every column so an odd-length English edge can hand off to
+    // an aligned Shuangpin suffix (e.g. fix + yi + xia).
+    const std::size_t total = raw.size();
+    net.clear();
+    net.resize(total + 2);
+
+    auto emit_entry = [&](std::size_t s, std::size_t end, uint32_t value,
+                          bool en_edge) {
+        auto entry = dict_.GetEntry(Dict::LetterPinyin, value);
+        for (uint32_t i = 0; i < entry.count; ++i) {
+            net[s].es.push_back({s, end, entry.items[i].id,
+                                 entry.items[i].pieces, 0, false, en_edge});
+        }
+    };
+
+    // Chinese edges: every start, every even-length span. A multi-syllable
+    // word (容易 = "rongyi" code) is one key in the index, so Get returns it
+    // directly; single syllables resolve the same way.
+    constexpr std::size_t kMaxSyllables = 8;
+    for (std::size_t s = 0; s + 2 <= total; ++s) {
+        const std::size_t max_end =
+            std::min(total, s + 2 * kMaxSyllables);
+        for (std::size_t end = s + 2; end <= max_end; end += 2) {
+            uint32_t value = 0;
+            if (sp_index_.Get(raw.substr(s, end - s), value)) {
+                emit_entry(s, end, value, /*en_edge=*/false);
+            }
+        }
+    }
+
+    // English / literal-passthrough edges: the raw shuangpin string is the
+    // literal letters the user typed, which is exactly what English candidates
+    // need (契约40a/40b). The sp index has no English keys, so match the raw
+    // bytes against the English DAT from every column.
+    for (std::size_t s = 0; s < total; ++s) {
+        for (const auto& r : dict_.Dat(Dict::LetterEn)
+                 .PrefixSearch(raw.substr(s), 512)) {
+            auto entry = dict_.GetEntry(Dict::LetterEn, r.value);
+            for (uint32_t i = 0; i < entry.count; ++i) {
+                net[s].es.push_back({s, s + r.length, entry.items[i].id,
+                                     entry.items[i].pieces, 0, false, true});
+            }
+        }
+    }
+
+    // Complete a trailing initial relative to each possible Shuangpin run.
+    // This permits an odd-length English prefix while preserving exact
+    // two-key alignment for the pinyin suffix that follows it.
+    if (expansion) {
+        auto emit_completions = [&](std::size_t s) {
+            const auto prefix = raw.substr(s);  // odd length, ends in lone key
+            for (const auto& r : sp_index_.FindWordsWithPrefix(prefix, 512)) {
+                // Completing the lone initial adds exactly one final key: the
+                // word code is the prefix plus one byte. Longer = extra syllable.
+                if (r.length != prefix.size() + 1) continue;
+                auto entry = dict_.GetEntry(Dict::LetterPinyin, r.value);
+                for (uint32_t i = 0; i < entry.count; ++i) {
+                    net[s].es.push_back({s, total, entry.items[i].id,
+                                         entry.items[i].pieces, 0, true, false});
+                }
+            }
+        };
+        // Complete suffixes whose length is odd relative to their start; this
+        // includes a lone final key after an odd-length English prefix.
+        for (std::size_t s = 0; s < total; ++s) {
+            if ((total - s) % 2 == 1) emit_completions(s);
+        }
+    }
+
+    // Two-track per-bucket tier filter, identical to InitNet: CN and English
+    // edges filtered on independent tracks; exact (tier 0) suppresses
+    // expansion (tier 1) only within its own track and target column.
+    auto tier_of = [](const Link& e) -> uint8_t {
+        if (e.id == NotToken) return 0;
+        return e.expansion ? 1 : 0;
+    };
+    std::vector<uint8_t> best_py(total + 2, 0xFF);
+    std::vector<uint8_t> best_en(total + 2, 0xFF);
+    for (std::size_t i = 0; i < total; ++i) {
+        auto& edges = net[i].es;
+        if (edges.empty()) continue;
+        for (const auto& e : edges) {
+            uint8_t t = tier_of(e);
+            auto& best = e.english ? best_en : best_py;
+            if (t < best[e.end]) best[e.end] = t;
+        }
+        edges.erase(std::remove_if(edges.begin(), edges.end(),
+            [&](const Link& e) {
+                if (e.id == NotToken) return false;
+                const auto& best = e.english ? best_en : best_py;
+                return tier_of(e) > best[e.end];
+            }), edges.end());
+        for (const auto& e : edges) {
+            best_py[e.end] = 0xFF;
+            best_en[e.end] = 0xFF;
+        }
+    }
+
+    net[total].es.push_back({total, total + 1, NotToken});
+}
+
 void Sime::PruneNode(std::vector<Link>& edges,
                      std::unordered_map<TokenID, float_t>* score_cache) const {
     if (edges.size() <= NodeSize) return;
@@ -1308,20 +1547,35 @@ std::vector<DecodeResult> Sime::CollectCandidates(
             (!text.starts_with(fixed_prefix) || text.size() <= fixed_prefix.size()))) {
             continue;
         }
-        std::string units = ExtractUnits(path, input);
+        // Shuangpin path carries no full-pinyin units (apostrophe-free); it
+        // reports syllable counts instead, and prefix-trimming is positional.
+        std::string units = has_sp_index_ ? std::string{}
+                                          : ExtractUnits(path, input);
         if (constrained) {
-            std::size_t cut = 0;
-            for (std::size_t i = 0; i < prefix_syllables; ++i) {
-                const std::size_t quote = units.find('\'', cut);
-                if (quote == std::string::npos) { cut = units.size(); break; }
-                cut = quote + 1;
+            if (!has_sp_index_) {
+                std::size_t cut = 0;
+                for (std::size_t i = 0; i < prefix_syllables; ++i) {
+                    const std::size_t quote = units.find('\'', cut);
+                    if (quote == std::string::npos) { cut = units.size(); break; }
+                    cut = quote + 1;
+                }
+                units = cut < units.size() ? units.substr(cut) : std::string{};
             }
             text.erase(0, fixed_prefix.size());
-            units = cut < units.size() ? units.substr(cut) : std::string{};
         }
         if (!full_seen.insert(text).second) continue;
-        full.push_back({std::move(text), std::move(units), ExtractTokens(path),
-                        -tail[rank].score, input.size()});
+        DecodeResult r;
+        r.text = std::move(text);
+        r.units = std::move(units);
+        r.tokens = ExtractTokens(path);
+        r.score = -tail[rank].score;
+        r.cnt = input.size();
+        if (has_sp_index_) {
+            const std::size_t skip_chars = ustr::ToU32(fixed_prefix).size();
+            ExtractSegments(path, input, r.segment_keys, r.segment_chars,
+                            skip_chars);
+        }
+        full.push_back(std::move(r));
     }
     std::sort(full.begin(), full.end(), [](const DecodeResult& a,
                                            const DecodeResult& b) {
@@ -1355,12 +1609,22 @@ std::vector<DecodeResult> Sime::CollectCandidates(
             - edge.penalty
             - static_cast<float_t>(input.size() - edge.end) * penalty_per_unit;
         const auto slice = input.substr(edge.start, edge.end - edge.start);
-        std::string units = edge.pieces ? AbbreviatePieces(edge.pieces, slice) : "";
+        // Shuangpin edges carry no full-pinyin units; report the one segment's
+        // raw-key/char span instead.
+        std::string units = has_sp_index_
+            ? std::string{}
+            : (edge.pieces ? AbbreviatePieces(edge.pieces, slice) : "");
         const std::size_t consumed = constrained
             ? edge.end - layer2_col : edge.end;
-        PushBestLayer2Entry(layer2, index_by_text,
-            {std::move(text), std::move(units), ExtractTokens({edge}),
-             score, consumed});
+        DecodeResult entry;
+        entry.text = std::move(text);
+        entry.units = std::move(units);
+        entry.tokens = ExtractTokens({edge});
+        entry.score = score;
+        entry.cnt = consumed;
+        if (has_sp_index_) ExtractSegments({edge}, input, entry.segment_keys,
+                                           entry.segment_chars);
+        PushBestLayer2Entry(layer2, index_by_text, std::move(entry));
     }
     std::sort(layer2.begin(), layer2.end(), [](const DecodeResult& a,
                                                const DecodeResult& b) {
@@ -1392,17 +1656,21 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     if (!ready_ || input.empty()) return results;
     MaybeTrimCaches();
 
-    std::string lower = NormalizeInput(input);
+    std::string lower = has_sp_index_ ? std::string(input)
+                                      : NormalizeInput(input);
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    InitNet(lower, net, expansion);
+    if (has_sp_index_) InitNetSp(lower, net, expansion);
+    else InitNet(lower, net, expansion);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
 
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
     State init = InitialState(context);
     net[0].states.Insert(init);
+    // keep_sep_context is a no-op on the sp path (no apostrophe sentinel edges);
+    // passed for intent. LM context flows across syllables via adjacent edges.
     Process(net, /*keep_sep_context=*/true);
 
     return CollectCandidates(net, lower, 0, context, extra);
@@ -1416,17 +1684,26 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     if (!ready_ || input.empty() || num == 0) return results;
     MaybeTrimCaches();
 
-    const std::string lower = NormalizeInput(input);
+    const std::string lower = has_sp_index_ ? std::string(input)
+                                            : NormalizeInput(input);
     if (lower.empty()) return results;
     std::size_t correction_col = 0;
-    for (std::size_t i = 0; i < prefix_syllables; ++i) {
-        const std::size_t quote = lower.find('\'', correction_col);
-        if (quote == std::string::npos) return results;
-        correction_col = quote + 1;
+    if (has_sp_index_) {
+        // The caller passes the raw-key column directly (summed from the chosen
+        // path's real per-segment key spans), so there is no 2-key-per-syllable
+        // assumption here. Clamp so a lone trailing initial still anchors.
+        correction_col = std::min(prefix_syllables, lower.size());
+    } else {
+        for (std::size_t i = 0; i < prefix_syllables; ++i) {
+            const std::size_t quote = lower.find('\'', correction_col);
+            if (quote == std::string::npos) return results;
+            correction_col = quote + 1;
+        }
     }
 
     std::vector<Node> net;
-    InitNet(lower, net, expansion);
+    if (has_sp_index_) InitNetSp(lower, net, expansion);
+    else InitNet(lower, net, expansion);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
@@ -1498,7 +1775,7 @@ std::vector<DecodeResult> Sime::NextTokens(
         std::string text = TextFromU32(u32);
         if (!seen.insert(text).second) continue;
 
-        results.push_back({std::move(text), {}, {tid}, -pro, 0});
+        results.push_back({std::move(text), {}, {tid}, -pro, 0, {}, {}});
     }
 
     return results;
@@ -1565,7 +1842,7 @@ std::vector<DecodeResult> Sime::Associate(
             std::u32string u32(chars, chars + U32Len(chars));
             std::string text = TextFromU32(u32);
             if (!seen.insert(text).second) continue;
-            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0}});
+            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0, {}, {}}});
         }
     }
 
@@ -1591,7 +1868,7 @@ std::vector<DecodeResult> Sime::Associate(
                 std::string text = TextFromU32(u32);
                 if (!seen.insert(text).second) continue;
                 cands.push_back({cost,
-                    {std::move(text), {}, {id}, -cost, head_len}});
+                    {std::move(text), {}, {id}, -cost, head_len, {}, {}}});
             }
         }
     }
@@ -1663,7 +1940,7 @@ std::vector<DecodeResult> Sime::GetTokens(
         if (results.size() >= num) break;
         if (!seen.insert(c.text).second) continue;
         results.push_back({std::move(c.text), {}, {c.id}, -c.score,
-                           prefix.size()});
+                           prefix.size(), {}, {}});
     }
 
     return results;

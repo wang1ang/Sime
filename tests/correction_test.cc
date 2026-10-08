@@ -34,6 +34,75 @@ int main() {
         std::cerr << "Could not load Sime test models\n";
         return EXIT_FAILURE;
     }
+    sime::Sime shuangpin_engine(SIME_TEST_DICT, SIME_TEST_CNT,
+                                SIME_TEST_SP_INDEX);
+    if (!shuangpin_engine.Ready()) {
+        std::cerr << "Could not load Sime Shuangpin test models\n";
+        return EXIT_FAILURE;
+    }
+    const auto mixed_shuangpin =
+        shuangpin_engine.DecodeSentence("fixyixw", 2, /*expansion=*/true);
+    if (!ContainsText(mixed_shuangpin, "fix一下")) {
+        std::cerr << "fixyixw no longer decodes as fix一下\n";
+        for (const auto& candidate : mixed_shuangpin) {
+            std::cerr << "  " << candidate.text << " [" << candidate.units
+                      << "] score=" << candidate.score << '\n';
+        }
+        return EXIT_FAILURE;
+    }
+    bool mixed_spans_ok = false;
+    for (const auto& candidate : mixed_shuangpin) {
+        if (candidate.text == "fix一下") {
+            mixed_spans_ok = candidate.segment_keys == std::vector<std::size_t>{3, 2, 2} &&
+                             candidate.segment_chars == std::vector<std::size_t>{3, 1, 1};
+            break;
+        }
+    }
+    if (!mixed_spans_ok) {
+        std::cerr << "fixyixw did not expose English/character spans from the decoder\n";
+        return EXIT_FAILURE;
+    }
+
+    bool incomplete_spans_ok = false;
+    const auto incomplete_shuangpin =
+        shuangpin_engine.DecodeSentence("kdqru", 8, /*expansion=*/true);
+    for (const auto& candidate : incomplete_shuangpin) {
+        if (candidate.text == "矿泉水") {
+            incomplete_spans_ok =
+                candidate.segment_keys == std::vector<std::size_t>{2, 2, 1} &&
+                candidate.segment_chars == std::vector<std::size_t>{1, 1, 1};
+            break;
+        }
+    }
+    if (!incomplete_spans_ok) {
+        std::cerr << "kdqru did not expose decoder-aligned character spans\n";
+        for (const auto& candidate : incomplete_shuangpin) {
+            if (candidate.text != "矿泉水") continue;
+            std::cerr << "  keys:";
+            for (const auto span : candidate.segment_keys) std::cerr << ' ' << span;
+            std::cerr << " chars:";
+            for (const auto span : candidate.segment_chars) std::cerr << ' ' << span;
+            std::cerr << '\n';
+        }
+        return EXIT_FAILURE;
+    }
+
+    const auto sp_corrections =
+        shuangpin_engine.DecodeCorrection("x;jwbi", "性", 2, 60,
+                                          /*expansion=*/true);
+    bool split_word_correction = false;
+    for (const auto& candidate : sp_corrections) {
+        if (candidate.text == "假币") {
+            split_word_correction =
+                candidate.segment_keys == std::vector<std::size_t>{2, 2} &&
+                candidate.segment_chars == std::vector<std::size_t>{1, 1};
+            break;
+        }
+    }
+    if (!split_word_correction) {
+        std::cerr << "index correction did not return suffix-only character spans\n";
+        return EXIT_FAILURE;
+    }
 
     const auto sentence = engine.DecodeSentence("xingjiabi", 0);
     if (sentence.empty() || sentence.front().text != "性价比") {
