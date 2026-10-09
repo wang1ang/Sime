@@ -63,6 +63,27 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    bool partial_english_ok = false;
+    const auto partial_english =
+        shuangpin_engine.DecodeSentence("woyeO", 8, /*expansion=*/true);
+    for (const auto& candidate : partial_english) {
+        if (candidate.text == "我也O") {
+            partial_english_ok =
+                candidate.segment_keys == std::vector<std::size_t>{2, 2, 1} &&
+                candidate.segment_chars == std::vector<std::size_t>{1, 1, 1};
+            break;
+        }
+    }
+    if (!partial_english_ok) {
+        std::cerr << "woyeO did not preserve the unmatched English letter\n";
+        return EXIT_FAILURE;
+    }
+    if (!ContainsText(engine.DecodeSentence("woyeO", 8, /*expansion=*/true),
+                      "我也O")) {
+        std::cerr << "full-pinyin woyeO did not preserve the unmatched English letter\n";
+        return EXIT_FAILURE;
+    }
+
     bool incomplete_spans_ok = false;
     const auto incomplete_shuangpin =
         shuangpin_engine.DecodeSentence("kdqru", 8, /*expansion=*/true);

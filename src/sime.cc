@@ -663,7 +663,13 @@ std::string Sime::ExtractUnits(const std::vector<Link>& path,
                                std::string_view input) {
     std::string py;
     for (const auto& link : path) {
-        if (link.id == NotToken) continue;
+        if (link.id == NotToken) {
+            if (link.start < input.size() && input[link.start] != '\'') {
+                if (!py.empty()) py += '\'';
+                py.append(input.substr(link.start, link.end - link.start));
+            }
+            continue;
+        }
         if (!link.pieces || link.pieces[0] == '\0') continue;
         if (!py.empty()) py += '\'';
         py += AbbreviatePieces(link.pieces,
@@ -672,9 +678,16 @@ std::string Sime::ExtractUnits(const std::vector<Link>& path,
     return py;
 }
 
-std::string Sime::ExtractText(const std::vector<Link>& path) const {
+std::string Sime::ExtractText(const std::vector<Link>& path,
+                              std::string_view input) const {
     std::u32string u32;
     for (const auto& link : path) {
+        if (link.id == NotToken) {
+            if (link.start < input.size() && input[link.start] != '\'') {
+                u32 += ustr::ToU32(input.substr(link.start, link.end - link.start));
+            }
+            continue;
+        }
         u32 += ToText(link);
     }
     return TextFromU32(u32);
@@ -704,20 +717,26 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                            std::size_t skip_chars) const {
     keys.clear();
     chars.clear();
+    auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
+        if (skip_chars >= span_chars) {
+            skip_chars -= span_chars;
+            return;
+        }
+        if (skip_chars > 0) skip_chars = 0;
+        keys.push_back(span_keys);
+        chars.push_back(span_chars);
+    };
     for (const auto& link : path) {
-        if (link.id == NotToken) continue;
+        if (link.id == NotToken) {
+            if (link.start < input.size() && input[link.start] != '\'') {
+                const std::size_t span = link.end - link.start;
+                append_span(span, span);
+            }
+            continue;
+        }
         const std::size_t char_count = ToText(link).size();
         if (char_count == 0) continue;
         const std::size_t key_count = link.end - link.start;
-        auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
-            if (skip_chars >= span_chars) {
-                skip_chars -= span_chars;
-                return;
-            }
-            if (skip_chars > 0) skip_chars = 0;
-            keys.push_back(span_keys);
-            chars.push_back(span_chars);
-        };
         if (!link.english && link.pieces && char_count > 1) {
             std::vector<std::string_view> syllables;
             const std::string_view pieces(link.pieces);
@@ -824,7 +843,7 @@ std::vector<DecodeResult> Sime::DecodeNumSentence(
         std::unordered_set<std::string> l1_seen;
         for (std::size_t rank = 0; rank < scan; ++rank) {
             auto path = Backtrace(tail[rank], total + 1);
-            std::string text = ExtractText(path);
+            std::string text = ExtractText(path, combined_input);
             if (text.empty() || !l1_seen.insert(text).second) continue;
             std::string py = ExtractUnits(path, combined_input);
 
@@ -943,7 +962,7 @@ std::vector<DecodeResult> Sime::DecodeNumStr(
     for (std::size_t rank = 0;
          rank < tail_states.size() && results.size() < max_top; ++rank) {
         auto path = Backtrace(tail_states[rank], total + 1);
-        std::string text = ExtractText(path);
+        std::string text = ExtractText(path, combined_input);
         if (text.empty() || !dedup.insert(text).second) continue;
         std::string py = ExtractUnits(path, combined_input);
         results.push_back({std::move(text), std::move(py),
@@ -1013,7 +1032,7 @@ std::vector<DecodeResult> Sime::DecodeStr(
          rank < tail_states.size() && results.size() < max_top; ++rank) {
         auto path = Backtrace(tail_states[rank], net.size() - 1);
         if (path.empty()) continue;
-        std::string text = ExtractText(path);
+        std::string text = ExtractText(path, lower);
         if (text.empty() || !dedup.insert(text).second) continue;
         // Shuangpin path carries no full-pinyin units; it reports per-segment
         // raw-key/char spans of the chosen path instead.
@@ -1218,6 +1237,12 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
+            const char letter = input[s];
+            if (net[s].es.empty() &&
+                ((letter >= 'a' && letter <= 'z') ||
+                 (letter >= 'A' && letter <= 'Z'))) {
+                net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
+            }
         }
     }
 
@@ -1326,6 +1351,17 @@ void Sime::InitNetSp(std::string_view raw,
         for (std::size_t s = 0; s < total; ++s) {
             if ((total - s) % 2 == 1) emit_completions(s);
         }
+    }
+
+    // Preserve unmatched ASCII letters as literal source spans so partial
+    // English is visible without case-specific composition logic.
+    for (std::size_t s = 0; s < total; ++s) {
+        const char c = raw[s];
+        if (!net[s].es.empty() ||
+            !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+            continue;
+        }
+        net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
     }
 
     // Two-track per-bucket tier filter, identical to InitNet: CN and English
@@ -1532,7 +1568,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     for (std::size_t rank = 0; rank < scan; ++rank) {
         auto path = Backtrace(tail[rank], net.size() - 1);
         if (path.empty()) continue;
-        std::string text = ExtractText(path);
+        std::string text = ExtractText(path, input);
         if (text.empty() || (constrained &&
             (!text.starts_with(fixed_prefix) || text.size() <= fixed_prefix.size()))) {
             continue;

@@ -212,7 +212,8 @@ private:
                                        std::size_t end);
 
     std::u32string ToText(const Link& n) const;
-    std::string ExtractText(const std::vector<Link>& path) const;
+    std::string ExtractText(const std::vector<Link>& path,
+                            std::string_view input) const;
     static std::string ExtractUnits(const std::vector<Link>& path,
                                     std::string_view input);
     static std::string AbbreviatePieces(const char* full_pieces,
