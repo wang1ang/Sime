@@ -51,7 +51,9 @@ if(BUILD_TESTING)
     target_compile_definitions(sime-correction-test PRIVATE
         SIME_TEST_DICT="${NEW_ROOT}/save/sime.dict"
         SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt"
-        SIME_TEST_SP_INDEX="${NEW_ROOT}/save/sime.sp.index")
+        SIME_TEST_SP_INDEX="${NEW_ROOT}/save/sime.sp.index"
+        SIME_TEST_XIAOHE_SP_INDEX="${NEW_ROOT}/save/sime.xiaohe.sp.index"
+        SIME_TEST_ZIRANMA_SP_INDEX="${NEW_ROOT}/save/sime.ziranma.sp.index")
     add_test(NAME sime-correction COMMAND sime-correction-test)
 endif()
 

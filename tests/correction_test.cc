@@ -40,6 +40,23 @@ int main() {
         std::cerr << "Could not load Sime Shuangpin test models\n";
         return EXIT_FAILURE;
     }
+    sime::Sime xiaohe_engine(SIME_TEST_DICT, SIME_TEST_CNT,
+                             SIME_TEST_XIAOHE_SP_INDEX);
+    sime::Sime ziranma_engine(SIME_TEST_DICT, SIME_TEST_CNT,
+                               SIME_TEST_ZIRANMA_SP_INDEX);
+    if (!xiaohe_engine.Ready() || !ziranma_engine.Ready()) {
+        std::cerr << "Could not load alternate Shuangpin test models\n";
+        return EXIT_FAILURE;
+    }
+    if (!ContainsText(xiaohe_engine.DecodeSentence("nihc", 8, true), "你好")) {
+        std::cerr << "Xiaohe index did not decode nihc as 你好\n";
+        return EXIT_FAILURE;
+    }
+    if (!ContainsText(ziranma_engine.DecodeSentence("nihk", 8, true), "你好")) {
+        std::cerr << "Ziranma index did not decode nihk as 你好\n";
+        return EXIT_FAILURE;
+    }
+
     const auto mixed_shuangpin =
         shuangpin_engine.DecodeSentence("fixyixw", 2, /*expansion=*/true);
     if (!ContainsText(mixed_shuangpin, "fix一下")) {
