@@ -21,7 +21,7 @@ NL_SET = {"n", "l"}
 O_SET = {"b", "p", "m", "f", "w"}
 UAI_SET = {"g", "k", "h", "zh", "ch", "sh"}
 
-# Fixed final -> key assignments, transcribed from InputScheme.swift.
+# Build-time fixed final-to-key tables for each Shuangpin scheme.
 FIXED = {
     "xiaohe": {
         "a": "a", "e": "e", "i": "i", "u": "u", "iu": "q",
