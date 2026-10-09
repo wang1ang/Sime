@@ -23,9 +23,9 @@ struct DecodeResult {
     std::vector<TokenID> tokens;  // token IDs for LM context
     float_t score = 0.0;    // larger is better (negative log probability negated)
     std::size_t cnt = 0;     // bytes of input consumed
-    // Shuangpin UI spans: one entry per tappable Han character, or one whole
-    // English/unaligned decoder segment. Key lengths come from the chosen path;
-    // callers need not infer boundaries from text length or a fixed key count.
+    // Optional decoder-supplied UI spans (Shuangpin index path): one entry
+    // per tappable Han character or grouped English/unaligned segment. Full
+    // pinyin uses `units` and leaves these arrays empty.
     std::vector<std::size_t> segment_keys;
     std::vector<std::size_t> segment_chars;
 };

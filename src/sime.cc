@@ -714,11 +714,7 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                 skip_chars -= span_chars;
                 return;
             }
-            if (skip_chars > 0) {
-                // An unaligned decoder segment cannot be split at this prefix.
-                // Preserve its true span rather than inventing character keys.
-                skip_chars = 0;
-            }
+            if (skip_chars > 0) skip_chars = 0;
             keys.push_back(span_keys);
             chars.push_back(span_chars);
         };
@@ -735,7 +731,6 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                 if (end == std::string_view::npos) break;
                 start = end + 1;
             }
-
             const auto source = input.substr(link.start, key_count);
             std::vector<std::size_t> spans(syllables.size());
             auto has_piece = [&](uint32_t value, std::string_view syllable) {
@@ -747,29 +742,24 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                 return false;
             };
             std::function<bool(std::size_t, std::size_t)> align =
-                [&](std::size_t syllable_index, std::size_t key_offset) {
-                    if (syllable_index == syllables.size()) {
-                        return key_offset == source.size();
-                    }
-                    const bool trailing_syllable =
-                        syllable_index + 1 == syllables.size();
-                    for (std::size_t end = key_offset + 1;
-                         end <= source.size(); ++end) {
-                        const auto code = source.substr(key_offset, end - key_offset);
+                [&](std::size_t index, std::size_t offset) {
+                    if (index == syllables.size()) return offset == source.size();
+                    const bool trailing = index + 1 == syllables.size();
+                    for (std::size_t end = offset + 1; end <= source.size(); ++end) {
                         uint32_t value = 0;
-                        const bool exact = sp_index_.Get(code, value) &&
-                            has_piece(value, syllables[syllable_index]);
-                        if (!exact && trailing_syllable && end == source.size()) {
-                            spans[syllable_index] = end - key_offset;
-                            if (align(syllable_index + 1, end)) return true;
+                        const bool exact = sp_index_.Get(
+                            source.substr(offset, end - offset), value) &&
+                            has_piece(value, syllables[index]);
+                        if (!exact && trailing && end == source.size()) {
+                            spans[index] = end - offset;
+                            if (align(index + 1, end)) return true;
                         }
                         if (!exact) continue;
-                        spans[syllable_index] = end - key_offset;
-                        if (align(syllable_index + 1, end)) return true;
+                        spans[index] = end - offset;
+                        if (align(index + 1, end)) return true;
                     }
                     return false;
                 };
-
             if (syllables.size() == char_count && align(0, 0)) {
                 for (const std::size_t span : spans) append_span(span, 1);
                 continue;
