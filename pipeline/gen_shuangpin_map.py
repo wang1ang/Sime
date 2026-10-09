@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate full-pinyin -> Xiaohe or Ziranma reverse maps for sime-spbuild.
+"""Generate build-time maps for the Sime Shuangpin decoder indexes.
 
-The key tables encode both layouts. Natural Code zero-initial codes repeat
-a/e/o, leave two-letter finals unchanged, and encode longer finals with their
-first letter plus the final key.
+The tables encode both layouts. Natural Code zero-initial codes repeat a/e/o,
+leave two-letter finals unchanged, and encode longer finals with their first
+letter plus the final key. Runtime passes raw keys to the selected index.
 """
 import os
 import re

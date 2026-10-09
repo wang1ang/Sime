@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Emit sogou.map.txt: full-pinyin syllable -> Sogou(Microsoft) shuangpin code.
+"""Emit the build-time Sogou/Microsoft key map for the offline index builder.
 
-Source of syllables: engine dict.inc (the set the engine actually recognizes).
-Skips bare initials (b/p/m...) and interjections (ng/hm) that have no
-shuangpin code. Mapping logic is in gen_sogou_map.to_code (transcribed from
-InputScheme.swift).
+It skips bare initials and interjections without Shuangpin codes. Runtime input
+is decoded from raw keys by the selected index.
 """
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +31,7 @@ with open(INC) as f:
 rows.sort()
 with open(OUT, "w") as f:
     f.write("# full-pinyin-syllable  sogou-shuangpin-code\n")
-    f.write("# generated from InputScheme.swift microsoft layout\n")
+    f.write("# build-time pinyin-syllable to raw-key map for the decoder index\n")
     for syl, code in rows:
         f.write(f"{syl} {code}\n")
 print(f"wrote {len(rows)} syllable mappings to {OUT}")

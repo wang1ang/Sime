@@ -1,5 +1,5 @@
 # full-pinyin-syllable  sogou-shuangpin-code
-# generated from InputScheme.swift microsoft layout
+# build-time pinyin-syllable to raw-key map for the decoder index
 a oa
 ai ol
 an oj

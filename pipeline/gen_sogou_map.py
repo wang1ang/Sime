@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the Sogou(=Microsoft layout) reverse map: full-pinyin syllable -> 2-key shuangpin code.
+"""Build the offline Sogou/Microsoft map consumed by the decoder index builder.
 
-Transcribed verbatim from iOS/Shared/InputScheme.swift `ShuangpinLayout.microsoft`.
-This is pure data derived from the single source of truth; no guessing.
-
-Forward (key->final) is 1-to-many via initial-dependent ambiguous finals.
-Reverse (syllable->code) is 1-to-1: the syllable already fixes initial+final.
+The reverse map is needed at index-build time only. Runtime input is passed as
+raw Shuangpin keys to the matching index.
 """
 
-# --- transcribed from InputScheme.swift ---
+# --- build-time Sogou/Microsoft key map ---
 
 # commonInitials: v->zh, i->ch, u->sh  (reverse: zh->v, ch->i, sh->u)
 INITIAL_TO_KEY = {"zh": "v", "ch": "i", "sh": "u"}
@@ -16,16 +13,7 @@ INITIAL_TO_KEY = {"zh": "v", "ch": "i", "sh": "u"}
 ALL_INITIALS = ["b","p","m","f","d","t","n","l","g","k","h",
                 "j","q","x","zh","ch","sh","r","z","c","s","y","w"]
 
-# finals table from `microsoft`. Each entry: key -> Final.
-# We invert to final-string -> key. Ambiguous finals contribute BOTH products.
-# resolve rules (from InputScheme.swift):
-#   uoO:      oSet(b,p,m,f,w)->o  else uo       (key o)
-#   iaUa:     uSet(g,k,h,zh,ch,sh,r,z,c,s)->ua else ia   (key w)
-#   iangUang: uSet->uang else iang              (key d)
-#   ongIong:  iongSet(j,q,x)->iong else ong     (key s)
-#   uaiV:     nlSet(n,l)->v(ü) else uai         (key y)
-#   ueVe:     nlSet->ve(üe) else ue             (key t)
-# fixed finals map their literal string.
+# The map handles initial-dependent ambiguous finals during index construction.
 
 FIXED_FINALS = {
     "a": "a", "e": "e", "i": "i", "u": "u",
