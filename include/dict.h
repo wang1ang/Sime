@@ -34,7 +34,10 @@ public:
     Dict(const Dict&) = delete;
     Dict& operator=(const Dict&) = delete;
 
-    bool Load(const std::filesystem::path& path);
+    bool Load(const std::filesystem::path& path,
+              bool load_letter_pinyin_trie = true);
+    // Bind a zero-copy external DAT; its backing memory must outlive this Dict.
+    bool AttachExternalDat(DatType type, const char* data, std::size_t size);
     void Clear();
 
     const trie::DoubleArray& Dat(DatType type) const { return dats_[type]; }

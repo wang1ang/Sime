@@ -29,6 +29,16 @@ bool ContainsText(const std::vector<sime::DecodeResult>& results,
 }  // namespace
 
 int main() {
+    {
+        sime::Dict shuangpin_dict;
+        if (!shuangpin_dict.Load(SIME_TEST_DICT, false) ||
+            !shuangpin_dict.Dat(sime::Dict::LetterPinyin).Empty() ||
+            shuangpin_dict.Dat(sime::Dict::LetterEn).Empty()) {
+            std::cerr << "Shuangpin dictionary loaded the wrong DATs\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     sime::Sime engine(SIME_TEST_DICT, SIME_TEST_CNT);
     if (!engine.Ready()) {
         std::cerr << "Could not load Sime test models\n";

@@ -33,9 +33,9 @@ struct DecodeResult {
 class Sime {
 public:
     Sime() = default;
-    // A non-empty sp_index_path binds the engine to the shuangpin path: input
-    // is raw shuangpin keystrokes, segmented by the prebuilt index. Requesting
-    // it but failing to load leaves the engine not-ready (caller may fall back).
+    // A non-empty sp_index_path binds raw Shuangpin input, skips the full-
+    // pinyin trie but keeps its candidate side table, and fails if the index
+    // cannot load (the caller may fall back).
     Sime(const std::filesystem::path& dict_path,
          const std::filesystem::path& model_path,
          const std::filesystem::path& sp_index_path = {});
@@ -195,8 +195,8 @@ private:
     void InitNet(std::string_view input,
                     std::vector<Node>& net,
                     bool expansion = true) const;
-    // Shuangpin lattice: `raw` is raw keystrokes, segmented into fixed 2-key
-    // syllables via sp_index_ (no full-pinyin conversion, no apostrophes).
+    // Shuangpin lattice: `raw` is raw keystrokes looked up in the active
+    // LetterPinyin DAT slot, bound to the selected Shuangpin index.
     void InitNetSp(std::string_view raw,
                    std::vector<Node>& net,
                    bool expansion = true) const;
@@ -258,9 +258,8 @@ private:
 
     // Resources
     Dict dict_;
-    // Shuangpin index: keys = raw shuangpin codes, values = the same values the
-    // dict's LetterPinyin trie stores, so words resolve via dict_.GetEntry.
-    trie::DoubleArray sp_index_;
+    // The active Chinese DAT is LetterPinyin: the dictionary trie in full-
+    // pinyin mode, or the external Shuangpin trie in Shuangpin mode.
     void* sp_mmap_addr_ = nullptr;
     std::size_t sp_mmap_len_ = 0;
     bool has_sp_index_ = false;

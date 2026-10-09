@@ -105,7 +105,8 @@ void Sime::ResetCaches() const {
 Sime::Sime(const std::filesystem::path& dict_path,
                          const std::filesystem::path& model_path,
                          const std::filesystem::path& sp_index_path) {
-    if (!dict_.Load(dict_path)) {
+    const bool load_letter_pinyin_trie = sp_index_path.empty();
+    if (!dict_.Load(dict_path, load_letter_pinyin_trie)) {
         return;
     }
     if (!scorer_.Load(model_path)) {
@@ -145,7 +146,8 @@ bool Sime::LoadShuangpinIndex(const std::filesystem::path& path) {
     if (addr == MAP_FAILED) return false;
 
     // Bare DoubleArray::Serialize layout: 4-byte size prefix + ArrayUnit array.
-    if (!sp_index_.MmapAttach(static_cast<const char*>(addr), size)) {
+    if (!dict_.AttachExternalDat(Dict::LetterPinyin,
+                                 static_cast<const char*>(addr), size)) {
         munmap(addr, size);
         return false;
     }
@@ -766,7 +768,7 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                     const bool trailing = index + 1 == syllables.size();
                     for (std::size_t end = offset + 1; end <= source.size(); ++end) {
                         uint32_t value = 0;
-                        const bool exact = sp_index_.Get(
+                        const bool exact = dict_.Dat(Dict::LetterPinyin).Get(
                             source.substr(offset, end - offset), value) &&
                             has_piece(value, syllables[index]);
                         if (!exact && trailing && end == source.size()) {
@@ -1308,7 +1310,7 @@ void Sime::InitNetSp(std::string_view raw,
             std::min(total, s + 2 * kMaxSyllables);
         for (std::size_t end = s + 2; end <= max_end; end += 2) {
             uint32_t value = 0;
-            if (sp_index_.Get(raw.substr(s, end - s), value)) {
+            if (dict_.Dat(Dict::LetterPinyin).Get(raw.substr(s, end - s), value)) {
                 emit_entry(s, end, value, /*en_edge=*/false);
             }
         }
@@ -1335,7 +1337,8 @@ void Sime::InitNetSp(std::string_view raw,
     if (expansion) {
         auto emit_completions = [&](std::size_t s) {
             const auto prefix = raw.substr(s);  // odd length, ends in lone key
-            for (const auto& r : sp_index_.FindWordsWithPrefix(prefix, 512)) {
+            for (const auto& r : dict_.Dat(Dict::LetterPinyin)
+                     .FindWordsWithPrefix(prefix, 512)) {
                 // Completing the lone initial adds exactly one final key: the
                 // word code is the prefix plus one byte. Longer = extra syllable.
                 if (r.length != prefix.size() + 1) continue;

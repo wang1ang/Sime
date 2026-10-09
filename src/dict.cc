@@ -43,7 +43,8 @@ void Dict::Clear() {
     mmap_len_ = 0;
 }
 
-bool Dict::Load(const std::filesystem::path& path) {
+bool Dict::Load(const std::filesystem::path& path,
+                bool load_letter_pinyin_trie) {
     Clear();
 
     int fd = open(path.c_str(), O_RDONLY);
@@ -87,9 +88,23 @@ bool Dict::Load(const std::filesystem::path& path) {
         std::size_t offset = section_offsets[t];
         if (offset >= size) continue;
 
-        // Zero-copy attach DAT.
+        // Skip scanning the full-pinyin trie for a Shuangpin binding, but
+        // retain its side table: the Shuangpin index stores these entry IDs.
         std::size_t dat_consumed = 0;
-        if (!dats_[t].MmapAttach(base + offset, size - offset, &dat_consumed)) {
+        if (t == LetterPinyin && !load_letter_pinyin_trie) {
+            constexpr std::size_t header_size = sizeof(uint32_t);
+            if (size - offset < header_size) { Clear(); return false; }
+            uint32_t node_count = 0;
+            std::memcpy(&node_count, base + offset, header_size);
+            const auto available = size - offset - header_size;
+            if (node_count > available / sizeof(trie::ArrayUnit)) {
+                Clear();
+                return false;
+            }
+            dat_consumed = header_size
+                + static_cast<std::size_t>(node_count) * sizeof(trie::ArrayUnit);
+        } else if (!dats_[t].MmapAttach(base + offset, size - offset,
+                                        &dat_consumed)) {
             continue;
         }
         offset += dat_consumed;
@@ -124,6 +139,11 @@ bool Dict::Load(const std::filesystem::path& path) {
     }
 
     return true;
+}
+
+bool Dict::AttachExternalDat(DatType type, const char* data, std::size_t size) {
+    if (!data || size == 0 || !dats_[type].Empty()) return false;
+    return dats_[type].MmapAttach(data, size);
 }
 
 Dict::Entry Dict::GetEntry(DatType type, uint32_t index) const {
