@@ -1284,7 +1284,8 @@ void Sime::InitNet(std::string_view input,
 
 void Sime::InitNetSp(std::string_view raw,
                      std::vector<Node>& net,
-                     bool expansion) const {
+                     bool expansion,
+                     const std::vector<Anchor>& anchors) const {
     // A syllable is exactly 2 raw keys relative to the start of a Shuangpin
     // run. Start at every column so an odd-length English edge can hand off to
     // an aligned Shuangpin suffix (e.g. fix + yi + xia).
@@ -1292,10 +1293,46 @@ void Sime::InitNetSp(std::string_view raw,
     net.clear();
     net.resize(total + 2);
 
+    // Han-anchor fast path: only the Chinese-edge fan-out is pre-filtered here
+    // (skip spans partially overlapping an anchor; keep only leaves containing
+    // the covered anchor chars) so the homophone set that ApplyAnchors would
+    // otherwise delete is never built. ApplyAnchors still runs afterward as the
+    // authority for every edge type + reachability injection.
+    const bool anchored = !anchors.empty();
+    auto han_char = [&](const Anchor& a) -> char32_t {
+        const char32_t* t = dict_.TokenAt(a.token);
+        return t ? t[0] : 0;
+    };
+    auto span_partial = [&](std::size_t s, std::size_t e) -> bool {
+        for (const auto& a : anchors) {
+            if (a.english) continue;
+            if (e <= a.a || s >= a.b) continue;      // disjoint
+            if (s <= a.a && e >= a.b) continue;      // fully covers
+            return true;                             // partial overlap
+        }
+        return false;
+    };
+    auto leaf_ok = [&](std::size_t s, std::size_t e, TokenID id) -> bool {
+        for (const auto& a : anchors) {
+            if (a.english) continue;
+            if (e <= a.a || s >= a.b) continue;      // disjoint
+            if (!(s <= a.a && e >= a.b)) return false;
+            const char32_t ch = han_char(a);
+            if (!ch) continue;
+            bool found = false;
+            const char32_t* t = dict_.TokenAt(id);
+            if (t) for (std::size_t i = 0; t[i] && i < 64; ++i)
+                if (t[i] == ch) { found = true; break; }
+            if (!found) return false;
+        }
+        return true;
+    };
+
     auto emit_entry = [&](std::size_t s, std::size_t end, uint32_t value,
                           bool en_edge) {
         auto entry = dict_.GetEntry(Dict::LetterPinyin, value);
         for (uint32_t i = 0; i < entry.count; ++i) {
+            if (anchored && !leaf_ok(s, end, entry.items[i].id)) continue;
             net[s].es.push_back({s, end, entry.items[i].id,
                                  entry.items[i].pieces, 0, false, en_edge});
         }
@@ -1309,6 +1346,11 @@ void Sime::InitNetSp(std::string_view raw,
         const std::size_t max_end =
             std::min(total, s + 2 * kMaxSyllables);
         for (std::size_t end = s + 2; end <= max_end; end += 2) {
+            // Step 1 (span geometry only): a span that partially overlaps a Han
+            // anchor can never carry a clean anchor char, so skip it before the
+            // trie lookup / homophone fan-out. Covering/disjoint spans proceed;
+            // emit_entry then does the per-leaf contains check.
+            if (anchored && span_partial(s, end)) continue;
             uint32_t value = 0;
             if (dict_.Dat(Dict::LetterPinyin).Get(raw.substr(s, end - s), value)) {
                 emit_entry(s, end, value, /*en_edge=*/false);
@@ -1719,6 +1761,79 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     net[0].states.Insert(init);
     // keep_sep_context is a no-op on the sp path (no apostrophe sentinel edges);
     // passed for intent. LM context flows across syllables via adjacent edges.
+    Process(net, /*keep_sep_context=*/true);
+
+    return CollectCandidates(net, lower, 0, context, extra);
+}
+
+void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
+                        const std::vector<Anchor>& anchors) const {
+    for (const auto& anc : anchors) {
+        if (anc.english) continue;  // English anchors: phase 2.
+        if (anc.b <= anc.a || anc.b > input.size()) continue;
+        const char32_t* tc = dict_.TokenAt(anc.token);
+        if (!tc || tc[0] == 0) continue;
+        const char32_t want = tc[0];
+
+        // An edge overlapping [a,b) is kept only if it fully covers [a,b) and
+        // its output contains the anchor char. No per-character letter spans:
+        // a word's output order follows its code, so covering the anchor's
+        // input span and containing the char is enough (中国 covers go=[2,4)
+        // and its output has 国, so it satisfies 国@[2,4)). An overlapping edge
+        // that doesn't cover+contain can't route a clean X through [a,b), and
+        // after removing them every path crossing [a,b) must use a covering
+        // edge -> the anchor holds.
+        bool reachable = false;
+        for (auto& col : net) {
+            auto& es = col.es;
+            es.erase(std::remove_if(es.begin(), es.end(), [&](const Link& e) {
+                if (e.end <= anc.a || e.start >= anc.b) return false;  // disjoint
+                if (e.start <= anc.a && e.end >= anc.b) {
+                    const std::u32string u32 = ToText(e);
+                    if (u32.find(want) != std::u32string::npos) {
+                        reachable = true;
+                        return false;  // covers [a,b) and contains X -> keep
+                    }
+                }
+                return true;  // overlaps but not a covering edge carrying X
+            }), es.end());
+        }
+
+        // Reachability guarantee: if no surviving edge covers [a,b) with X,
+        // inject a lone single-character edge so the anchor is always honored
+        // (exact cover, no boundary forced on neighbors).
+        if (!reachable) {
+            net[anc.a].es.push_back(
+                {anc.a, anc.b, anc.token, nullptr, 0, false, false});
+        }
+    }
+}
+
+std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
+    std::string_view input,
+    const std::vector<TokenID>& context,
+    const std::vector<Anchor>& anchors,
+    std::size_t extra,
+    bool expansion) const {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    std::vector<DecodeResult> results;
+    if (!ready_ || input.empty()) return results;
+    MaybeTrimCaches();
+
+    std::string lower = has_sp_index_ ? std::string(input)
+                                      : NormalizeInput(input);
+    if (lower.empty()) return results;
+
+    std::vector<Node> net;
+    if (has_sp_index_) InitNetSp(lower, net, expansion, anchors);
+    else InitNet(lower, net, expansion);
+    ApplyAnchors(net, lower, anchors);
+    ComputeEdgePenalties(net, lower);
+    for (auto& col : net) PruneNode(col.es);
+
+    for (auto& col : net) col.states.SetMaxTop(BeamSize);
+    State init = InitialState(context);
+    net[0].states.Insert(init);
     Process(net, /*keep_sep_context=*/true);
 
     return CollectCandidates(net, lower, 0, context, extra);

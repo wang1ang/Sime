@@ -30,6 +30,20 @@ struct DecodeResult {
     std::vector<std::size_t> segment_chars;
 };
 
+// A correction anchor: input letters [a,b) decode to a specific output. The
+// anchor is expressed purely in input-letter coordinates (no fixed key width,
+// no segment assumption). Chinese anchors are per-character and matched by the
+// pinned token; a path is kept iff the output character piece-aligned to [a,b)
+// is that character (words spanning across a/b are fine). English anchors
+// (phase 2) treat the span as one literal unit with hard boundaries.
+struct Anchor {
+    std::size_t a = 0;
+    std::size_t b = 0;
+    bool english = false;
+    TokenID token = 0;   // Chinese: the pinned single character's token id
+    std::string text;    // UTF-8 of the pinned output (english / verification)
+};
+
 class Sime {
 public:
     Sime() = default;
@@ -84,6 +98,15 @@ public:
     std::vector<DecodeResult> DecodeSentence(
         std::string_view input,
         const std::vector<TokenID>& context,
+        std::size_t extra = 0,
+        bool expansion = true) const;
+    // Anchor-constrained sentence decode: the beam keeps only paths consistent
+    // with every anchor (see struct Anchor), so non-anchored positions are
+    // re-ranked under the anchors instead of being overlaid after the fact.
+    std::vector<DecodeResult> DecodeSentenceWithAnchors(
+        std::string_view input,
+        const std::vector<TokenID>& context,
+        const std::vector<Anchor>& anchors,
         std::size_t extra = 0,
         bool expansion = true) const;
     // Candidate list for character correction. `fixed_prefix` is the UTF-8
@@ -199,9 +222,14 @@ private:
     // LetterPinyin DAT slot, bound to the selected Shuangpin index.
     void InitNetSp(std::string_view raw,
                    std::vector<Node>& net,
-                   bool expansion = true) const;
+                   bool expansion = true,
+                   const std::vector<Anchor>& anchors = {}) const;
     static void ComputeEdgePenalties(std::vector<Node>& net,
                                      std::string_view input);
+    // Prune the lattice to anchor-consistent edges (see struct Anchor). Runs
+    // after InitNet, before penalties/pruning/beam.
+    void ApplyAnchors(std::vector<Node>& net, std::string_view input,
+                      const std::vector<Anchor>& anchors) const;
     void PruneNode(std::vector<Link>& edges,
                    std::unordered_map<TokenID, float_t>* score_cache = nullptr) const;
 

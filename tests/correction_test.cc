@@ -289,5 +289,52 @@ int main() {
         std::cerr << "expansion=false unexpectedly completed wanq to 完全\n";
         return EXIT_FAILURE;
     }
+
+    // --- Anchor-constrained decode (Chinese) ---
+    auto token_for = [&](std::string_view code, std::string_view want) -> sime::TokenID {
+        for (const auto& r : shuangpin_engine.DecodeStr(code, 40))
+            if (r.text == want && !r.tokens.empty()) return r.tokens[0];
+        return 0;
+    };
+    const sime::TokenID tok_zhong = token_for("vs", "中");
+    const sime::TokenID tok_zhong3 = token_for("vs", "种");
+    const sime::TokenID tok_guo = token_for("go", "国");
+    const sime::TokenID tok_ren = token_for("rf", "人");
+    if (!tok_zhong || !tok_zhong3 || !tok_guo || !tok_ren) {
+        std::cerr << "anchor test could not resolve seed tokens\n";
+        return EXIT_FAILURE;
+    }
+
+    // Anchoring 中 at [0,2) keeps 中国 (the word spans past letter 2 but its
+    // first piece aligns to [0,2)=中) and drops every 种/other homophone path.
+    {
+        const auto r = shuangpin_engine.DecodeSentenceWithAnchors(
+            "vsgo", {}, {{0, 2, false, tok_zhong, "中"}}, 0, true);
+        if (!ContainsText(r, "中国") || ContainsText(r, "种")) {
+            std::cerr << "anchor 中@[0,2) should keep 中国 and drop 种\n";
+            return EXIT_FAILURE;
+        }
+    }
+    // Anchoring 种 at [0,2) is the mirror: 种过 stays, 中 disappears.
+    {
+        const auto r = shuangpin_engine.DecodeSentenceWithAnchors(
+            "vsgo", {}, {{0, 2, false, tok_zhong3, "种"}}, 0, true);
+        if (ContainsText(r, "中") || r.empty()) {
+            std::cerr << "anchor 种@[0,2) should drop every 中 path\n";
+            return EXIT_FAILURE;
+        }
+    }
+    // Per-char anchors 国@[2,4) + 人@[4,6) leave word grouping free; the top
+    // path is still the full 中国人权 and the free tail stays 权 (not 全).
+    {
+        const auto r = shuangpin_engine.DecodeSentenceWithAnchors(
+            "vsgorfqr", {},
+            {{2, 4, false, tok_guo, "国"}, {4, 6, false, tok_ren, "人"}}, 0, true);
+        if (r.empty() || r[0].text != "中国人权") {
+            std::cerr << "anchor 国+人 should keep 中国人权 as top; got: "
+                      << (r.empty() ? "(none)" : r[0].text) << '\n';
+            return EXIT_FAILURE;
+        }
+    }
     return EXIT_SUCCESS;
 }
