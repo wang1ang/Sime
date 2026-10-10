@@ -1367,6 +1367,25 @@ void Sime::InitNetSp(std::string_view raw,
         net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
     }
 
+    // A capital letter is an explicit literal boundary. Always keep the
+    // uppercase run as one literal edge, even when the English DAT already
+    // matched this column: otherwise a leading capital that happens to spell
+    // an English prefix ("Bi" in "Biexc") swallows the following keys and the
+    // shuangpin after it can never realign to a fresh two-key grid. The edge
+    // ends the run, so the pinyin suffix starts on a clean boundary.
+    for (std::size_t s = 0; s < total;) {
+        if (!(raw[s] >= 'A' && raw[s] <= 'Z')) { ++s; continue; }
+        std::size_t end = s;
+        while (end < total && raw[end] >= 'A' && raw[end] <= 'Z') ++end;
+        const bool exists = std::any_of(
+            net[s].es.begin(), net[s].es.end(),
+            [&](const Link& e) { return e.id == NotToken && e.end == end; });
+        if (!exists) {
+            net[s].es.push_back({s, end, NotToken, nullptr, 0, false, true});
+        }
+        s = end;
+    }
+
     // Two-track per-bucket tier filter, identical to InitNet: CN and English
     // edges filtered on independent tracks; exact (tier 0) suppresses
     // expansion (tier 1) only within its own track and target column.
