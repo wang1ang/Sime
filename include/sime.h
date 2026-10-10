@@ -30,18 +30,16 @@ struct DecodeResult {
     std::vector<std::size_t> segment_chars;
 };
 
-// A correction anchor: input letters [a,b) decode to a specific output. The
-// anchor is expressed purely in input-letter coordinates (no fixed key width,
-// no segment assumption). Chinese anchors are per-character and matched by the
-// pinned token; a path is kept iff the output character piece-aligned to [a,b)
-// is that character (words spanning across a/b are fine). English anchors
-// (phase 2) treat the span as one literal unit with hard boundaries.
+// A correction anchor: input letters [a,b) must decode to a fixed output.
+// Chinese anchors are per-character (matched by `token`: a path is kept iff a
+// covering edge outputs that char, so words spanning a/b still count). English
+// anchors treat [a,b) as one literal unit with hard boundaries.
 struct Anchor {
     std::size_t a = 0;
     std::size_t b = 0;
     bool english = false;
-    TokenID token = 0;   // Chinese: the pinned single character's token id
-    std::string text;    // UTF-8 of the pinned output (english / verification)
+    TokenID token = 0;   // Chinese: pinned char's token id
+    std::string text;    // English: pinned literal (UTF-8)
 };
 
 class Sime {

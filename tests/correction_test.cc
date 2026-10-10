@@ -336,5 +336,18 @@ int main() {
             return EXIT_FAILURE;
         }
     }
+    // English anchor: love@[2,6) over woloveni is one hard-bounded literal, so
+    // the top path is 我/沃 + love + 你 (wo and ni decode freely around it).
+    {
+        const auto r = shuangpin_engine.DecodeSentenceWithAnchors(
+            "woloveni", {}, {{2, 6, true, 0, "love"}}, 0, true);
+        if (r.empty() || r[0].text.find("love") == std::string::npos ||
+            r[0].cnt != 8) {
+            std::cerr << "english anchor love@[2,6) should keep ...love... at "
+                         "full coverage; got: "
+                      << (r.empty() ? "(none)" : r[0].text) << '\n';
+            return EXIT_FAILURE;
+        }
+    }
     return EXIT_SUCCESS;
 }

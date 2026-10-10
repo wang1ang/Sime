@@ -1293,16 +1293,10 @@ void Sime::InitNetSp(std::string_view raw,
     net.clear();
     net.resize(total + 2);
 
-    // Han-anchor fast path: only the Chinese-edge fan-out is pre-filtered here
-    // (skip spans partially overlapping an anchor; keep only leaves containing
-    // the covered anchor chars) so the homophone set that ApplyAnchors would
-    // otherwise delete is never built. ApplyAnchors still runs afterward as the
-    // authority for every edge type + reachability injection.
+    // Chinese-anchor build-time pre-filter: skip the homophone fan-out that
+    // ApplyAnchors (the authority, run afterward) would delete anyway. Only
+    // the Chinese-edge loop is gated; empty anchors keep the original path.
     const bool anchored = !anchors.empty();
-    auto han_char = [&](const Anchor& a) -> char32_t {
-        const char32_t* t = dict_.TokenAt(a.token);
-        return t ? t[0] : 0;
-    };
     auto span_partial = [&](std::size_t s, std::size_t e) -> bool {
         for (const auto& a : anchors) {
             if (a.english) continue;
@@ -1312,17 +1306,18 @@ void Sime::InitNetSp(std::string_view raw,
         }
         return false;
     };
+    // A leaf is kept only if it carries every covered anchor's char.
     auto leaf_ok = [&](std::size_t s, std::size_t e, TokenID id) -> bool {
         for (const auto& a : anchors) {
             if (a.english) continue;
-            if (e <= a.a || s >= a.b) continue;      // disjoint
+            if (e <= a.a || s >= a.b) continue;
             if (!(s <= a.a && e >= a.b)) return false;
-            const char32_t ch = han_char(a);
-            if (!ch) continue;
+            const char32_t* want = dict_.TokenAt(a.token);
+            if (!want || !want[0]) continue;
             bool found = false;
             const char32_t* t = dict_.TokenAt(id);
             if (t) for (std::size_t i = 0; t[i] && i < 64; ++i)
-                if (t[i] == ch) { found = true; break; }
+                if (t[i] == want[0]) { found = true; break; }
             if (!found) return false;
         }
         return true;
@@ -1346,10 +1341,9 @@ void Sime::InitNetSp(std::string_view raw,
         const std::size_t max_end =
             std::min(total, s + 2 * kMaxSyllables);
         for (std::size_t end = s + 2; end <= max_end; end += 2) {
-            // Step 1 (span geometry only): a span that partially overlaps a Han
-            // anchor can never carry a clean anchor char, so skip it before the
-            // trie lookup / homophone fan-out. Covering/disjoint spans proceed;
-            // emit_entry then does the per-leaf contains check.
+            // Skip spans that partially overlap a Han anchor before the trie
+            // lookup (they can't carry a clean anchor char); emit_entry does
+            // the per-leaf contains check for covering spans.
             if (anchored && span_partial(s, end)) continue;
             uint32_t value = 0;
             if (dict_.Dat(Dict::LetterPinyin).Get(raw.substr(s, end - s), value)) {
@@ -1768,41 +1762,53 @@ std::vector<DecodeResult> Sime::DecodeSentence(
 
 void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
                         const std::vector<Anchor>& anchors) const {
-    for (const auto& anc : anchors) {
-        if (anc.english) continue;  // English anchors: phase 2.
-        if (anc.b <= anc.a || anc.b > input.size()) continue;
-        const char32_t* tc = dict_.TokenAt(anc.token);
-        if (!tc || tc[0] == 0) continue;
-        const char32_t want = tc[0];
-
-        // An edge overlapping [a,b) is kept only if it fully covers [a,b) and
-        // its output contains the anchor char. No per-character letter spans:
-        // a word's output order follows its code, so covering the anchor's
-        // input span and containing the char is enough (中国 covers go=[2,4)
-        // and its output has 国, so it satisfies 国@[2,4)). An overlapping edge
-        // that doesn't cover+contain can't route a clean X through [a,b), and
-        // after removing them every path crossing [a,b) must use a covering
-        // edge -> the anchor holds.
-        bool reachable = false;
+    // Erase every edge overlapping [a,b) for which keep() is false; return
+    // whether any edge was kept.
+    auto filter = [&](std::size_t a, std::size_t b, auto keep) -> bool {
+        bool kept = false;
         for (auto& col : net) {
             auto& es = col.es;
             es.erase(std::remove_if(es.begin(), es.end(), [&](const Link& e) {
-                if (e.end <= anc.a || e.start >= anc.b) return false;  // disjoint
-                if (e.start <= anc.a && e.end >= anc.b) {
-                    const std::u32string u32 = ToText(e);
-                    if (u32.find(want) != std::u32string::npos) {
-                        reachable = true;
-                        return false;  // covers [a,b) and contains X -> keep
-                    }
-                }
-                return true;  // overlaps but not a covering edge carrying X
+                if (e.end <= a || e.start >= b) return false;  // disjoint
+                if (keep(e)) { kept = true; return false; }
+                return true;
             }), es.end());
         }
+        return kept;
+    };
 
-        // Reachability guarantee: if no surviving edge covers [a,b) with X,
-        // inject a lone single-character edge so the anchor is always honored
-        // (exact cover, no boundary forced on neighbors).
-        if (!reachable) {
+    for (const auto& anc : anchors) {
+        if (anc.b <= anc.a || anc.b > input.size()) continue;
+
+        if (anc.english) {
+            // [a,b) is one literal unit with hard boundaries. Reuse an existing
+            // exact-span English edge only if it already outputs S (keeps its
+            // LM token); otherwise inject a NotToken literal rendering
+            // input[a,b) (the new edge goes by the anchor span, not S).
+            const std::u32string want = ustr::ToU32(anc.text);
+            const bool kept = filter(anc.a, anc.b, [&](const Link& e) {
+                return e.english && e.start == anc.a && e.end == anc.b &&
+                       !want.empty() && ToText(e) == want;
+            });
+            if (!kept) {
+                net[anc.a].es.push_back(
+                    {anc.a, anc.b, NotToken, nullptr, 0, false, true});
+            }
+            continue;
+        }
+
+        const char32_t* tc = dict_.TokenAt(anc.token);
+        if (!tc || tc[0] == 0) continue;
+        const char32_t want = tc[0];
+        // Keep edges that fully cover [a,b) and output the anchor char (word
+        // order follows code, so cover+contain suffices and 中国 satisfies
+        // 国@[2,4)); after removal every path crossing [a,b) uses a covering
+        // edge. Inject a lone char edge if none survives (reachability).
+        const bool kept = filter(anc.a, anc.b, [&](const Link& e) {
+            return e.start <= anc.a && e.end >= anc.b &&
+                   ToText(e).find(want) != std::u32string::npos;
+        });
+        if (!kept) {
             net[anc.a].es.push_back(
                 {anc.a, anc.b, anc.token, nullptr, 0, false, false});
         }
