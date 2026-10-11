@@ -349,5 +349,23 @@ int main() {
             return EXIT_FAILURE;
         }
     }
+
+    // Chinese anchor matches by the pinned char (text), not the token: a
+    // correction candidate reports word/context token ids, so a wrong (or 0)
+    // token must not matter as long as the char is right. 篇@[2,4) via text
+    // alone, mixed with an English literal, reproduces 那篇paper.
+    {
+        const auto r = shuangpin_engine.DecodeSentenceWithAnchors(
+            "napmpaper", {},
+            {{0, 2, false, 0, "\xe9\x82\xa3"},       // 那, token 0
+             {2, 4, false, 99999999, "\xe7\xaf\x87"}, // 篇, deliberately wrong token
+             {4, 9, true, 0, "paper"}},
+            0, true);
+        if (r.empty() || r[0].text != "\xe9\x82\xa3\xe7\xaf\x87paper") {
+            std::cerr << "char-matched anchors should reproduce 那篇paper; got: "
+                      << (r.empty() ? "(none)" : r[0].text) << '\n';
+            return EXIT_FAILURE;
+        }
+    }
     return EXIT_SUCCESS;
 }
