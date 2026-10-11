@@ -1312,12 +1312,18 @@ void Sime::InitNetSp(std::string_view raw,
             if (a.english) continue;
             if (e <= a.a || s >= a.b) continue;
             if (!(s <= a.a && e >= a.b)) return false;
-            const char32_t* want = dict_.TokenAt(a.token);
-            if (!want || !want[0]) continue;
+            char32_t want_c = 0;
+            const std::u32string wt = ustr::ToU32(a.text);
+            if (!wt.empty()) {
+                want_c = wt[0];
+            } else if (const char32_t* w = dict_.TokenAt(a.token)) {
+                want_c = w[0];
+            }
+            if (want_c == 0) continue;
             bool found = false;
             const char32_t* t = dict_.TokenAt(id);
             if (t) for (std::size_t i = 0; t[i] && i < 64; ++i)
-                if (t[i] == want[0]) { found = true; break; }
+                if (t[i] == want_c) { found = true; break; }
             if (!found) return false;
         }
         return true;
@@ -1797,18 +1803,26 @@ void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
             continue;
         }
 
-        const char32_t* tc = dict_.TokenAt(anc.token);
-        if (!tc || tc[0] == 0) continue;
-        const char32_t want = tc[0];
+        // Match by the pinned character: prefer the anchor's text (candidate
+        // tokens are word/context ids, not clean single-char tokens), fall back
+        // to the token's char.
+        const std::u32string want_u32 = ustr::ToU32(anc.text);
+        char32_t want = 0;
+        if (!want_u32.empty()) {
+            want = want_u32[0];
+        } else if (const char32_t* tc = dict_.TokenAt(anc.token)) {
+            want = tc[0];
+        }
+        if (want == 0) continue;
         // Keep edges that fully cover [a,b) and output the anchor char (word
         // order follows code, so cover+contain suffices and 中国 satisfies
         // 国@[2,4)); after removal every path crossing [a,b) uses a covering
-        // edge. Inject a lone char edge if none survives (reachability).
+        // edge. Inject a lone char edge if none survives (needs a real token).
         const bool kept = filter(anc.a, anc.b, [&](const Link& e) {
             return e.start <= anc.a && e.end >= anc.b &&
                    ToText(e).find(want) != std::u32string::npos;
         });
-        if (!kept) {
+        if (!kept && anc.token != 0) {
             net[anc.a].es.push_back(
                 {anc.a, anc.b, anc.token, nullptr, 0, false, false});
         }
