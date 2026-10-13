@@ -1644,11 +1644,19 @@ std::vector<DecodeResult> Sime::CollectCandidates(
                                           : ExtractUnits(path, input);
         if (constrained) {
             if (!has_sp_index_) {
-                std::size_t cut = 0;
-                for (std::size_t i = 0; i < prefix_syllables; ++i) {
-                    const std::size_t quote = units.find('\'', cut);
-                    if (quote == std::string::npos) { cut = units.size(); break; }
-                    cut = quote + 1;
+                // prefix_syllables is a raw-key column; drop the locked prefix's
+                // units by counting that many input keys (apostrophes separate
+                // syllables and are not keys).
+                std::size_t keys = 0, cut = 0;
+                for (char c : units) {
+                    if (c == '\'') {
+                        ++cut;
+                        if (keys >= prefix_syllables) break;
+                        continue;
+                    }
+                    if (keys >= prefix_syllables) break;
+                    ++keys;
+                    ++cut;
                 }
                 units = cut < units.size() ? units.substr(cut) : std::string{};
             }
@@ -1869,19 +1877,10 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     const std::string lower = has_sp_index_ ? std::string(input)
                                             : NormalizeInput(input);
     if (lower.empty()) return results;
-    std::size_t correction_col = 0;
-    if (has_sp_index_) {
-        // The caller passes the raw-key column directly (summed from the chosen
-        // path's real per-segment key spans), so there is no 2-key-per-syllable
-        // assumption here. Clamp so a lone trailing initial still anchors.
-        correction_col = std::min(prefix_syllables, lower.size());
-    } else {
-        for (std::size_t i = 0; i < prefix_syllables; ++i) {
-            const std::size_t quote = lower.find('\'', correction_col);
-            if (quote == std::string::npos) return results;
-            correction_col = quote + 1;
-        }
-    }
+    // prefix_syllables is a raw-key column (summed from the chosen path's
+    // per-segment key spans) for every scheme, so re-selection cuts at the
+    // same column full pinyin and Shuangpin already report in their spans.
+    const std::size_t correction_col = std::min(prefix_syllables, lower.size());
 
     std::vector<Node> net;
     if (has_sp_index_) InitNetSp(lower, net, expansion);

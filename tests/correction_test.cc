@@ -158,9 +158,12 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Raw (undelimited) correction: re-decoding the jiabi suffix keeps 价比/
+    // 假币 on top. No delimiter locks the jia|bi split, so single-char paths
+    // (家/加/…) now compete below them — the point of allowing re-segmentation.
     const auto candidates = engine.DecodeCorrection(
-        "xing'jia'bi", "性", 1, 60);
-    if (!ExpectPrefix(candidates, {"价比", "假币", "家比"})) {
+        "xingjiabi", "性", 4, 60);
+    if (!ExpectPrefix(candidates, {"价比", "假币"})) {
         std::cerr << "Unexpected constrained candidates:\n";
         for (const auto& candidate : candidates) {
             std::cerr << "  " << candidate.text << '\n';

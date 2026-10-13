@@ -110,9 +110,12 @@ public:
     // Candidate list for character correction. `fixed_prefix` is the UTF-8
     // text before the tapped syllable and stays unchanged; returned texts are
     // only the replaceable suffix. Long paths precede short/character paths.
-    // `expansion` enables abbreviation/tail completion (a full-pinyin
-    // convenience); Shuangpin passes false because every syllable is fully
-    // typed and its final is already locked.
+    // `prefix_syllables` is the raw-key column where re-selection starts (the
+    // locked prefix spans input keys [0, prefix_syllables)); the same
+    // convention for full pinyin and Shuangpin. `expansion` enables
+    // abbreviation/tail completion (a full-pinyin convenience); Shuangpin
+    // passes false because every syllable is fully typed and its final is
+    // already locked.
     std::vector<DecodeResult> DecodeCorrection(
         std::string_view input, std::string_view fixed_prefix,
         std::size_t prefix_syllables, std::size_t num = 60,
