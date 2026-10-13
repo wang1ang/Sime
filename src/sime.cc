@@ -1044,8 +1044,9 @@ std::vector<DecodeResult> Sime::DecodeStr(
         r.tokens = ExtractTokens(path);
         r.score = -tail_states[rank].score;
         r.cnt = input.size();
-        if (has_sp_index_) ExtractSegments(path, lower, r.segment_keys,
-                                           r.segment_chars);
+        // Report per-segment raw-key/char spans for every scheme (full pinyin
+        // included), so callers never reconstruct them from `units`.
+        ExtractSegments(path, lower, r.segment_keys, r.segment_chars);
         results.push_back(std::move(r));
     }
     return results;
@@ -1660,11 +1661,9 @@ std::vector<DecodeResult> Sime::CollectCandidates(
         r.tokens = ExtractTokens(path);
         r.score = -tail[rank].score;
         r.cnt = input.size();
-        if (has_sp_index_) {
-            const std::size_t skip_chars = ustr::ToU32(fixed_prefix).size();
-            ExtractSegments(path, input, r.segment_keys, r.segment_chars,
-                            skip_chars);
-        }
+        const std::size_t skip_chars = ustr::ToU32(fixed_prefix).size();
+        ExtractSegments(path, input, r.segment_keys, r.segment_chars,
+                        skip_chars);
         full.push_back(std::move(r));
     }
     std::sort(full.begin(), full.end(), [](const DecodeResult& a,
@@ -1712,8 +1711,8 @@ std::vector<DecodeResult> Sime::CollectCandidates(
         entry.tokens = ExtractTokens({edge});
         entry.score = score;
         entry.cnt = consumed;
-        if (has_sp_index_) ExtractSegments({edge}, input, entry.segment_keys,
-                                           entry.segment_chars);
+        ExtractSegments({edge}, input, entry.segment_keys,
+                        entry.segment_chars);
         PushBestLayer2Entry(layer2, index_by_text, std::move(entry));
     }
     std::sort(layer2.begin(), layer2.end(), [](const DecodeResult& a,
