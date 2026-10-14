@@ -740,48 +740,67 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
         if (char_count == 0) continue;
         const std::size_t key_count = link.end - link.start;
         if (!link.english && link.pieces && char_count > 1) {
-            std::vector<std::string_view> syllables;
-            const std::string_view pieces(link.pieces);
-            std::size_t start = 0;
-            while (start <= pieces.size()) {
-                const std::size_t end = pieces.find('\'', start);
-                const auto syllable = pieces.substr(
-                    start, end == std::string_view::npos
-                               ? std::string_view::npos : end - start);
-                if (!syllable.empty()) syllables.push_back(syllable);
-                if (end == std::string_view::npos) break;
-                start = end + 1;
-            }
-            const auto source = input.substr(link.start, key_count);
-            std::vector<std::size_t> spans(syllables.size());
-            auto has_piece = [&](uint32_t value, std::string_view syllable) {
-                const auto entry = dict_.GetEntry(Dict::LetterPinyin, value);
-                for (uint32_t i = 0; i < entry.count; ++i) {
-                    const char* candidate = entry.items[i].pieces;
-                    if (candidate && syllable == candidate) return true;
+            std::vector<std::size_t> spans;
+            if (has_sp_index_) {
+                // Shuangpin codes are not letter abbreviations, so resolve each
+                // syllable's key span against the bound index.
+                std::vector<std::string_view> syllables;
+                const std::string_view pieces(link.pieces);
+                std::size_t start = 0;
+                while (start <= pieces.size()) {
+                    const std::size_t end = pieces.find('\'', start);
+                    const auto syllable = pieces.substr(
+                        start, end == std::string_view::npos
+                                   ? std::string_view::npos : end - start);
+                    if (!syllable.empty()) syllables.push_back(syllable);
+                    if (end == std::string_view::npos) break;
+                    start = end + 1;
                 }
-                return false;
-            };
-            std::function<bool(std::size_t, std::size_t)> align =
-                [&](std::size_t index, std::size_t offset) {
-                    if (index == syllables.size()) return offset == source.size();
-                    const bool trailing = index + 1 == syllables.size();
-                    for (std::size_t end = offset + 1; end <= source.size(); ++end) {
-                        uint32_t value = 0;
-                        const bool exact = dict_.Dat(Dict::LetterPinyin).Get(
-                            source.substr(offset, end - offset), value) &&
-                            has_piece(value, syllables[index]);
-                        if (!exact && trailing && end == source.size()) {
-                            spans[index] = end - offset;
-                            if (align(index + 1, end)) return true;
-                        }
-                        if (!exact) continue;
-                        spans[index] = end - offset;
-                        if (align(index + 1, end)) return true;
+                const auto source = input.substr(link.start, key_count);
+                std::vector<std::size_t> aligned(syllables.size());
+                auto has_piece = [&](uint32_t value, std::string_view syllable) {
+                    const auto entry = dict_.GetEntry(Dict::LetterPinyin, value);
+                    for (uint32_t i = 0; i < entry.count; ++i) {
+                        const char* candidate = entry.items[i].pieces;
+                        if (candidate && syllable == candidate) return true;
                     }
                     return false;
                 };
-            if (syllables.size() == char_count && align(0, 0)) {
+                std::function<bool(std::size_t, std::size_t)> align =
+                    [&](std::size_t index, std::size_t offset) {
+                        if (index == syllables.size()) return offset == source.size();
+                        const bool trailing = index + 1 == syllables.size();
+                        for (std::size_t end = offset + 1; end <= source.size(); ++end) {
+                            uint32_t value = 0;
+                            const bool exact = dict_.Dat(Dict::LetterPinyin).Get(
+                                source.substr(offset, end - offset), value) &&
+                                has_piece(value, syllables[index]);
+                            if (!exact && trailing && end == source.size()) {
+                                aligned[index] = end - offset;
+                                if (align(index + 1, end)) return true;
+                            }
+                            if (!exact) continue;
+                            aligned[index] = end - offset;
+                            if (align(index + 1, end)) return true;
+                        }
+                        return false;
+                    };
+                if (syllables.size() == char_count && align(0, 0)) spans = aligned;
+            } else {
+                // Full pinyin: map the full pieces back onto the typed input,
+                // which also covers abbreviations (typed "zh" for "zhi").
+                const std::string abbrev = AbbreviatePieces(
+                    link.pieces, input.substr(link.start, key_count));
+                std::size_t cur = 0;
+                for (const char ch : abbrev) {
+                    if (ch == '\'') { spans.push_back(cur); cur = 0; }
+                    else { ++cur; }
+                }
+                spans.push_back(cur);
+            }
+            std::size_t total = 0;
+            for (const std::size_t span : spans) total += span;
+            if (spans.size() == char_count && total == key_count) {
                 for (const std::size_t span : spans) append_span(span, 1);
                 continue;
             }
