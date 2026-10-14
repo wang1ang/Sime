@@ -1269,8 +1269,14 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
+            // Keep the typed letter when nothing here decodes it: an English
+            // completion alone does not count (B must offer B, not just BBC),
+            // while pinyin abbreviation does (b stays 不/吧).
             const char letter = input[s];
-            if (net[s].es.empty() &&
+            const bool decoded = std::any_of(
+                net[s].es.begin(), net[s].es.end(),
+                [](const Link& e) { return !(e.english && e.expansion); });
+            if (!decoded &&
                 ((letter >= 'a' && letter <= 'z') ||
                  (letter >= 'A' && letter <= 'Z'))) {
                 net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
@@ -1293,6 +1299,8 @@ void Sime::InitNet(std::string_view input,
         auto& edges = net[i].es;
         if (edges.empty()) continue;
         for (const auto& e : edges) {
+            // A literal letter must not filter out the completions beside it.
+            if (e.id == NotToken && e.english) continue;
             uint8_t t = tier_of(e);
             auto& best = e.english ? best_en : best_py;
             if (t < best[e.end]) best[e.end] = t;

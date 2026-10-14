@@ -245,6 +245,27 @@ int main() {
         }
     }
 
+    // An English completion alone does not decode a letter: a lone B keeps
+    // the literal first with its completions after it, also at a sentence
+    // tail; a pinyin abbreviation still does (b stays Chinese).
+    {
+        const auto b = engine.DecodeSentence("B", 8, /*expansion=*/true);
+        if (!ExpectPrefix(b, {"B"}) || !ContainsText(b, "BBC")) {
+            std::cerr << "B lost its literal or its completions\n";
+            return EXIT_FAILURE;
+        }
+        const auto tail = engine.DecodeSentence("woxuanB", 8, /*expansion=*/true);
+        if (tail.empty() || tail.front().text.back() != 'B') {
+            std::cerr << "woxuanB no longer ends in a literal B\n";
+            return EXIT_FAILURE;
+        }
+        const auto lower = engine.DecodeSentence("b", 8, /*expansion=*/true);
+        if (lower.empty() || lower.front().text == "b") {
+            std::cerr << "lowercase b became a literal\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     // Full pinyin (no apostrophe) still abbreviation-expands: beij -> 北京.
     if (!ContainsText(engine.DecodeSentence("beij", 8, /*expansion=*/true),
                       "北京")) {
