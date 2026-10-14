@@ -171,6 +171,24 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Re-choosing a tail that only wins under host context (你 → ganshan =
+    // 干啼呢, gan'sha'n). The correction must (a) seed the beam with the host
+    // context so the 干啼 prefix exists, and (b) treat the correction column as
+    // a segment boundary so the lone trailing "n" expands into many n-initial
+    // choices instead of a single reading.
+    {
+        const auto context = engine.Tokenize("你");
+        const auto tail = engine.DecodeCorrection(
+            "ganshan", "干啼", 6, 60, /*expansion=*/true, context);
+        if (!ContainsText(tail, "呢") || tail.size() < 5) {
+            std::cerr << "context-seeded tail correction missing n-initial list:\n";
+            for (const auto& candidate : tail) {
+                std::cerr << "  " << candidate.text << '\n';
+            }
+            return EXIT_FAILURE;
+        }
+    }
+
     // Delimited input locks a completed final even with expansion on:
     // expansion may only complete a trailing lone initial. So
     // "shi'yu'shu'ru'fa" must not surface 石原/十元 (yu -> yuan) either way.

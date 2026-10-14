@@ -1073,7 +1073,7 @@ std::vector<DecodeResult> Sime::DecodeStr(
 
 void Sime::InitNet(std::string_view input,
                       std::vector<Node>& net,
-                      bool expansion) const {
+                      bool expansion, std::size_t forced_boundary) const {
     const std::size_t total = input.size();
     net.clear();
     net.resize(total + 2);
@@ -1129,6 +1129,16 @@ void Sime::InitNet(std::string_view input,
             if (!known && pos + 2 <= total) {
                 std::string_view two = input.substr(pos, 2);
                 if (two == "zh" || two == "ch" || two == "sh") best = 2;
+            }
+            // A correction locks the prefix at forced_boundary, so end the
+            // segment there: that makes the tapped suffix (e.g. a lone "n")
+            // its own segment and lets expansion enumerate it, instead of the
+            // greedy walk swallowing it into a longer syllable (shan).
+            if (pos < forced_boundary && pos + best > forced_boundary) {
+                best = forced_boundary - pos;
+                const std::string clamped(input.substr(pos, best));
+                known = Dict::IsKnownPinyin(clamped);
+                terminal = known && !Dict::IsExtendablePinyin(clamped);
             }
             pos += best;
             seg_bounds.push_back(pos);
@@ -1887,7 +1897,8 @@ std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
 
 std::vector<DecodeResult> Sime::DecodeCorrection(
     std::string_view input, std::string_view fixed_prefix,
-    std::size_t prefix_syllables, std::size_t num, bool expansion) const {
+    std::size_t prefix_syllables, std::size_t num, bool expansion,
+    const std::vector<TokenID>& host_context) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty() || num == 0) return results;
@@ -1903,14 +1914,17 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
 
     std::vector<Node> net;
     if (has_sp_index_) InitNetSp(lower, net, expansion);
-    else InitNet(lower, net, expansion);
+    else InitNet(lower, net, expansion, correction_col);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
-    net[0].states.Insert(InitialState());
+    // Seed the beam with the host context (as the main decode does) so
+    // re-selection reproduces the context-dependent segmentation — e.g. after
+    // 你, "ganshan" stays 干啼呢 (gan'sha'n) instead of collapsing to 甘陕.
+    net[0].states.Insert(InitialState(host_context));
     Process(net);
 
-    std::vector<TokenID> context;
+    std::vector<TokenID> context(host_context.begin(), host_context.end());
     // Reuse a previously initialized segmenter without allocating its large
     // index on a correction tap inside the memory-constrained extension.
     if (cutter_) {
