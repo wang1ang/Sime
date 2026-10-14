@@ -664,19 +664,14 @@ std::string Sime::AbbreviatePieces(const char* full_pieces,
 std::string Sime::ExtractUnits(const std::vector<Link>& path,
                                std::string_view input) {
     std::string py;
-    bool prev_literal = false;  // adjacent literal letters form one unit
     for (const auto& link : path) {
         if (link.id == NotToken) {
-            const bool literal =
-                link.start < input.size() && input[link.start] != '\'';
-            if (literal) {
-                if (!py.empty() && !prev_literal) py += '\'';
+            if (link.start < input.size() && input[link.start] != '\'') {
+                if (!py.empty()) py += '\'';
                 py.append(input.substr(link.start, link.end - link.start));
             }
-            prev_literal = literal;
             continue;
         }
-        prev_literal = false;
         if (!link.pieces || link.pieces[0] == '\0') continue;
         if (!py.empty()) py += '\'';
         py += AbbreviatePieces(link.pieces,
@@ -724,35 +719,23 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                            std::size_t skip_chars) const {
     keys.clear();
     chars.clear();
-    // Whether the last appended segment is literal letters, so the next
-    // adjacent literal letter extends it (AA stays one segment).
-    bool literal_open = false;
     auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
         if (skip_chars >= span_chars) {
             skip_chars -= span_chars;
-            return false;
+            return;
         }
         if (skip_chars > 0) skip_chars = 0;
         keys.push_back(span_keys);
         chars.push_back(span_chars);
-        return true;
     };
     for (const auto& link : path) {
         if (link.id == NotToken) {
             if (link.start < input.size() && input[link.start] != '\'') {
                 const std::size_t span = link.end - link.start;
-                if (literal_open) {
-                    keys.back() += span;
-                    chars.back() += span;
-                } else {
-                    literal_open = append_span(span, span);
-                }
-            } else {
-                literal_open = false;
+                append_span(span, span);
             }
             continue;
         }
-        literal_open = false;
         const std::size_t char_count = ToText(link).size();
         if (char_count == 0) continue;
         const std::size_t key_count = link.end - link.start;
@@ -1088,6 +1071,21 @@ std::vector<DecodeResult> Sime::DecodeStr(
     return results;
 }
 
+// A run of capitals is an explicit literal: one edge per maximal run, so the
+// letters stay as typed and the pinyin after it starts on a clean boundary.
+// The per-letter cost lets a real word (Apple) beat A + abbreviations.
+void Sime::AddUppercaseRuns(std::string_view input, std::vector<Node>& net) {
+    auto upper = [&](std::size_t i) { return input[i] >= 'A' && input[i] <= 'Z'; };
+    for (std::size_t s = 0; s < input.size();) {
+        if (!upper(s)) { ++s; continue; }
+        std::size_t end = s;
+        while (end < input.size() && upper(end)) ++end;
+        net[s].es.push_back({s, end, NotToken, nullptr,
+                             LiteralPenalty * (end - s), false, true});
+        s = end;
+    }
+}
+
 void Sime::InitNet(std::string_view input,
                       std::vector<Node>& net,
                       bool expansion, std::size_t forced_boundary) const {
@@ -1286,19 +1284,6 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
-            // Keep the typed letter when no pinyin edge decodes it. English
-            // edges do not count (B must offer B, not only BBC; Bfangan must
-            // reach B方案, not only Bf…); scoring still lets real words win.
-            const char letter = input[s];
-            const bool decoded = std::any_of(
-                net[s].es.begin(), net[s].es.end(),
-                [](const Link& e) { return !e.english; });
-            if (!decoded &&
-                ((letter >= 'a' && letter <= 'z') ||
-                 (letter >= 'A' && letter <= 'Z'))) {
-                net[s].es.push_back({s, s + 1, NotToken, nullptr,
-                                     LiteralPenalty, false, true});
-            }
         }
     }
 
@@ -1317,8 +1302,6 @@ void Sime::InitNet(std::string_view input,
         auto& edges = net[i].es;
         if (edges.empty()) continue;
         for (const auto& e : edges) {
-            // A literal letter must not filter out the completions beside it.
-            if (e.id == NotToken && e.english) continue;
             uint8_t t = tier_of(e);
             auto& best = e.english ? best_en : best_py;
             if (t < best[e.end]) best[e.end] = t;
@@ -1335,6 +1318,8 @@ void Sime::InitNet(std::string_view input,
         }
     }
 
+    // After the tier filter, so a literal never suppresses completions.
+    AddUppercaseRuns(input, net);
     net[total].es.push_back({total, total + 1, NotToken});
 }
 
@@ -1454,41 +1439,10 @@ void Sime::InitNetSp(std::string_view raw,
         }
     }
 
-    // Preserve unmatched ASCII letters as literal source spans so partial
-    // English is visible without case-specific composition logic.
-    for (std::size_t s = 0; s < total; ++s) {
-        const char c = raw[s];
-        if (!net[s].es.empty() ||
-            !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
-            continue;
-        }
-        net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
-    }
-
-    // A capital letter is an explicit literal boundary. Always keep the
-    // uppercase run as one literal edge, even when the English DAT already
-    // matched this column: otherwise a leading capital that happens to spell
-    // an English prefix ("Bi" in "Biexc") swallows the following keys and the
-    // shuangpin after it can never realign to a fresh two-key grid. The edge
-    // ends the run, so the pinyin suffix starts on a clean boundary.
-    for (std::size_t s = 0; s < total;) {
-        if (!(raw[s] >= 'A' && raw[s] <= 'Z')) { ++s; continue; }
-        std::size_t end = s;
-        while (end < total && raw[end] >= 'A' && raw[end] <= 'Z') ++end;
-        const bool exists = std::any_of(
-            net[s].es.begin(), net[s].es.end(),
-            [&](const Link& e) { return e.id == NotToken && e.end == end; });
-        if (!exists) {
-            net[s].es.push_back({s, end, NotToken, nullptr, 0, false, true});
-        }
-        s = end;
-    }
-
-    // English tail completion, as in InitNet (B -> BBC). Added after the
-    // literal edges so a completion never counts as decoding a letter, and
-    // never started inside an uppercase run (BBC must not offer BB + CNN).
-    auto upper = [&](std::size_t i) { return raw[i] >= 'A' && raw[i] <= 'Z'; };
+    // English tail completion, as in InitNet (B -> BBC), never started inside
+    // a capital run (BBC must not offer BB + CNN).
     if (expansion) {
+        auto upper = [&](std::size_t i) { return raw[i] >= 'A' && raw[i] <= 'Z'; };
         for (std::size_t s = 0; s < total; ++s) {
             if (s > 0 && upper(s - 1) && upper(s)) continue;
             const auto suffix = raw.substr(s);
@@ -1517,8 +1471,6 @@ void Sime::InitNetSp(std::string_view raw,
         auto& edges = net[i].es;
         if (edges.empty()) continue;
         for (const auto& e : edges) {
-            // A literal letter must not filter out the completions beside it.
-            if (e.id == NotToken && e.english) continue;
             uint8_t t = tier_of(e);
             auto& best = e.english ? best_en : best_py;
             if (t < best[e.end]) best[e.end] = t;
@@ -1535,6 +1487,8 @@ void Sime::InitNetSp(std::string_view raw,
         }
     }
 
+    // After the tier filter, so a literal never suppresses completions.
+    AddUppercaseRuns(raw, net);
     net[total].es.push_back({total, total + 1, NotToken});
 }
 
