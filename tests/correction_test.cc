@@ -90,6 +90,21 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    {
+        // Shuangpin offers English completions behind the literal letter, but
+        // never starts one inside an uppercase run (BBC must not offer BBCNN).
+        const auto b = shuangpin_engine.DecodeSentence("B", 8, /*expansion=*/true);
+        if (!ExpectPrefix(b, {"B"}) || !ContainsText(b, "BBC")) {
+            std::cerr << "shuangpin B did not offer B then English completions\n";
+            return EXIT_FAILURE;
+        }
+        const auto bbc = shuangpin_engine.DecodeSentence("BBC", 8, /*expansion=*/true);
+        if (!ExpectPrefix(bbc, {"BBC"}) || ContainsText(bbc, "BBCNN")) {
+            std::cerr << "shuangpin BBC started a completion inside the uppercase run\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     bool partial_english_ok = false;
     const auto partial_english =
         shuangpin_engine.DecodeSentence("woyeO", 8, /*expansion=*/true);

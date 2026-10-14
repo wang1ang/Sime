@@ -1484,6 +1484,26 @@ void Sime::InitNetSp(std::string_view raw,
         s = end;
     }
 
+    // English tail completion, as in InitNet (B -> BBC). Added after the
+    // literal edges so a completion never counts as decoding a letter, and
+    // never started inside an uppercase run (BBC must not offer BB + CNN).
+    auto upper = [&](std::size_t i) { return raw[i] >= 'A' && raw[i] <= 'Z'; };
+    if (expansion) {
+        for (std::size_t s = 0; s < total; ++s) {
+            if (s > 0 && upper(s - 1) && upper(s)) continue;
+            const auto suffix = raw.substr(s);
+            for (const auto& r : dict_.Dat(Dict::LetterEn)
+                     .FindWordsWithPrefix(suffix, 1024)) {
+                if (r.length <= suffix.size()) continue;
+                auto entry = dict_.GetEntry(Dict::LetterEn, r.value);
+                for (uint32_t i = 0; i < entry.count; ++i) {
+                    net[s].es.push_back({s, total, entry.items[i].id,
+                                         entry.items[i].pieces, 0, true, true});
+                }
+            }
+        }
+    }
+
     // Two-track per-bucket tier filter, identical to InitNet: CN and English
     // edges filtered on independent tracks; exact (tier 0) suppresses
     // expansion (tier 1) only within its own track and target column.
@@ -1497,6 +1517,8 @@ void Sime::InitNetSp(std::string_view raw,
         auto& edges = net[i].es;
         if (edges.empty()) continue;
         for (const auto& e : edges) {
+            // A literal letter must not filter out the completions beside it.
+            if (e.id == NotToken && e.english) continue;
             uint8_t t = tier_of(e);
             auto& best = e.english ? best_en : best_py;
             if (t < best[e.end]) best[e.end] = t;
