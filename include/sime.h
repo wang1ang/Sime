@@ -217,6 +217,10 @@ private:
     // candidates can win — the LM's <eos>|english=0 transition gives
     // English an unfair tail-cost edge in beam scoring otherwise.
     static constexpr float_t EnglishPenaltyShort = 8.0;
+    // Per-letter cost of a literal (dictionary-free) letter edge. Low enough
+    // that B beats the completion BBC and B方案 beats Bf按干, high enough
+    // that a real word (Apple) beats a literal letter plus abbreviations.
+    static constexpr float_t LiteralPenalty = 10.0;
 
     // Lattice building
     void InitNet(std::string_view input,

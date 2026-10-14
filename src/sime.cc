@@ -664,14 +664,19 @@ std::string Sime::AbbreviatePieces(const char* full_pieces,
 std::string Sime::ExtractUnits(const std::vector<Link>& path,
                                std::string_view input) {
     std::string py;
+    bool prev_literal = false;  // adjacent literal letters form one unit
     for (const auto& link : path) {
         if (link.id == NotToken) {
-            if (link.start < input.size() && input[link.start] != '\'') {
-                if (!py.empty()) py += '\'';
+            const bool literal =
+                link.start < input.size() && input[link.start] != '\'';
+            if (literal) {
+                if (!py.empty() && !prev_literal) py += '\'';
                 py.append(input.substr(link.start, link.end - link.start));
             }
+            prev_literal = literal;
             continue;
         }
+        prev_literal = false;
         if (!link.pieces || link.pieces[0] == '\0') continue;
         if (!py.empty()) py += '\'';
         py += AbbreviatePieces(link.pieces,
@@ -719,23 +724,35 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                            std::size_t skip_chars) const {
     keys.clear();
     chars.clear();
+    // Whether the last appended segment is literal letters, so the next
+    // adjacent literal letter extends it (AA stays one segment).
+    bool literal_open = false;
     auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
         if (skip_chars >= span_chars) {
             skip_chars -= span_chars;
-            return;
+            return false;
         }
         if (skip_chars > 0) skip_chars = 0;
         keys.push_back(span_keys);
         chars.push_back(span_chars);
+        return true;
     };
     for (const auto& link : path) {
         if (link.id == NotToken) {
             if (link.start < input.size() && input[link.start] != '\'') {
                 const std::size_t span = link.end - link.start;
-                append_span(span, span);
+                if (literal_open) {
+                    keys.back() += span;
+                    chars.back() += span;
+                } else {
+                    literal_open = append_span(span, span);
+                }
+            } else {
+                literal_open = false;
             }
             continue;
         }
+        literal_open = false;
         const std::size_t char_count = ToText(link).size();
         if (char_count == 0) continue;
         const std::size_t key_count = link.end - link.start;
@@ -1269,17 +1286,18 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
-            // Keep the typed letter when nothing here decodes it: an English
-            // completion alone does not count (B must offer B, not just BBC),
-            // while pinyin abbreviation does (b stays 不/吧).
+            // Keep the typed letter when no pinyin edge decodes it. English
+            // edges do not count (B must offer B, not only BBC; Bfangan must
+            // reach B方案, not only Bf…); scoring still lets real words win.
             const char letter = input[s];
             const bool decoded = std::any_of(
                 net[s].es.begin(), net[s].es.end(),
-                [](const Link& e) { return !(e.english && e.expansion); });
+                [](const Link& e) { return !e.english; });
             if (!decoded &&
                 ((letter >= 'a' && letter <= 'z') ||
                  (letter >= 'A' && letter <= 'Z'))) {
-                net[s].es.push_back({s, s + 1, NotToken, nullptr, 0, false, true});
+                net[s].es.push_back({s, s + 1, NotToken, nullptr,
+                                     LiteralPenalty, false, true});
             }
         }
     }

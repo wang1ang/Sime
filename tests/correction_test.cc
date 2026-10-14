@@ -245,9 +245,10 @@ int main() {
         }
     }
 
-    // An English completion alone does not decode a letter: a lone B keeps
-    // the literal first with its completions after it, also at a sentence
-    // tail; a pinyin abbreviation still does (b stays Chinese).
+    // Only pinyin decodes a letter: a lone B keeps the literal first with its
+    // completions after it, also at a sentence tail and before pinyin that an
+    // English prefix (Bf) would swallow; a pinyin abbreviation still decodes
+    // (b stays Chinese), and a real word still beats literal + abbreviation.
     {
         const auto b = engine.DecodeSentence("B", 8, /*expansion=*/true);
         if (!ExpectPrefix(b, {"B"}) || !ContainsText(b, "BBC")) {
@@ -257,6 +258,15 @@ int main() {
         const auto tail = engine.DecodeSentence("woxuanB", 8, /*expansion=*/true);
         if (tail.empty() || tail.front().text.back() != 'B') {
             std::cerr << "woxuanB no longer ends in a literal B\n";
+            return EXIT_FAILURE;
+        }
+        if (!ExpectPrefix(engine.DecodeSentence("Bfangan", 8, true), {"B方案"})) {
+            std::cerr << "Bfangan no longer decodes to B方案\n";
+            return EXIT_FAILURE;
+        }
+        if (!ExpectPrefix(engine.DecodeSentence("woxihuanApple", 8, true),
+                          {"我喜欢Apple"})) {
+            std::cerr << "woxihuanApple lost the word Apple\n";
             return EXIT_FAILURE;
         }
         const auto lower = engine.DecodeSentence("b", 8, /*expansion=*/true);
