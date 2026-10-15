@@ -221,6 +221,10 @@ private:
     // the completion BBC and B方案 beats Bf…, high enough that a real word
     // (Apple) beats a literal A plus abbreviations.
     static constexpr float_t LiteralPenalty = 10.0;
+    // Extra cost of an English completion where the typed letters already
+    // spell a word: enough that hi beats his, low enough that BB's
+    // completions are not pushed behind Chinese abbreviations (fix > 覅新).
+    static constexpr float_t OpenEnglishPenalty = 4.0;
 
     // Lattice building
     static void AddUppercaseRuns(std::string_view input, std::vector<Node>& net);

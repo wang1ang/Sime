@@ -266,6 +266,17 @@ void Sime::ComputeEdgePenalties(std::vector<Node>& net,
             }
             edge.penalty = en_pen
                 + (edge.expansion ? expansion_penalty : 0.0f);
+            // An English word still being typed (BB) keeps its completions
+            // (BBC), but behind the exact word itself.
+            if (edge.english && edge.expansion) {
+                const auto& es = net[edge.start].es;
+                if (std::any_of(es.begin(), es.end(), [&](const Link& o) {
+                        return o.english && !o.expansion && o.id != NotToken &&
+                               o.end == edge.end;
+                    })) {
+                    edge.penalty += OpenEnglishPenalty;
+                }
+            }
         }
     }
 }
@@ -1315,7 +1326,9 @@ void Sime::InitNet(std::string_view input,
         }
         edges.erase(std::remove_if(edges.begin(), edges.end(),
             [&](const Link& e) {
-                if (e.id == NotToken) return false;
+                // English completions are ranked, not dropped (see
+                // ComputeEdgePenalties).
+                if (e.id == NotToken || e.english) return false;
                 const auto& best = e.english ? best_en : best_py;
                 return tier_of(e) > best[e.end];
             }), edges.end());
@@ -1484,7 +1497,9 @@ void Sime::InitNetSp(std::string_view raw,
         }
         edges.erase(std::remove_if(edges.begin(), edges.end(),
             [&](const Link& e) {
-                if (e.id == NotToken) return false;
+                // English completions are ranked, not dropped (see
+                // ComputeEdgePenalties).
+                if (e.id == NotToken || e.english) return false;
                 const auto& best = e.english ? best_en : best_py;
                 return tier_of(e) > best[e.end];
             }), edges.end());
