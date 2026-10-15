@@ -136,6 +136,17 @@ int main() {
         }
     }
 
+    {
+        // ym is no syllable; single keys expand as initials, so the top
+        // sentence still covers every key.
+        const auto olympic =
+            shuangpin_engine.DecodeSentence("olympic", 8, /*expansion=*/true);
+        if (olympic.empty() || olympic.front().cnt != 7) {
+            std::cerr << "shuangpin olympic did not decode every key\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     bool partial_english_ok = false;
     const auto partial_english =
         shuangpin_engine.DecodeSentence("woyeO", 8, /*expansion=*/true);

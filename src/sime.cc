@@ -1524,6 +1524,24 @@ void Sime::InitNetSp(std::string_view raw,
         }
     }
 
+    // Any single key may expand as an initial, so a column no syllable starts
+    // at (y in olympic: ym) does not cut every path; scoring picks the split.
+    if (expansion) {
+        for (std::size_t s = 0; s < total; ++s) {
+            if (anchored && span_partial(s, s + 1)) continue;
+            for (const auto& r : dict_.Dat(Dict::LetterPinyin)
+                     .FindWordsWithPrefix(raw.substr(s, 1), 512)) {
+                if (r.length != 2) continue;
+                auto entry = dict_.GetEntry(Dict::LetterPinyin, r.value);
+                for (uint32_t i = 0; i < entry.count; ++i) {
+                    if (anchored && !leaf_ok(s, s + 1, entry.items[i].id)) continue;
+                    net[s].es.push_back({s, s + 1, entry.items[i].id,
+                                         entry.items[i].pieces, 0, true, false});
+                }
+            }
+        }
+    }
+
     // Two-track per-bucket tier filter, identical to InitNet: CN and English
     // edges filtered on independent tracks; exact (tier 0) suppresses
     // expansion (tier 1) only within its own track and target column.
