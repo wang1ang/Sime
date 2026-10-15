@@ -1073,6 +1073,8 @@ std::vector<DecodeResult> Sime::DecodeStr(
 
 // A run of capitals is an explicit literal: one edge per maximal run, so the
 // letters stay as typed and the pinyin after it starts on a clean boundary.
+// Skipped when an exact edge already spans the run (BBC, AI); a completion
+// (B -> BBC) spells more than was typed, so it does not count.
 // The per-letter cost lets a real word (Apple) beat A + abbreviations.
 void Sime::AddUppercaseRuns(std::string_view input, std::vector<Node>& net) {
     auto upper = [&](std::size_t i) { return input[i] >= 'A' && input[i] <= 'Z'; };
@@ -1080,8 +1082,13 @@ void Sime::AddUppercaseRuns(std::string_view input, std::vector<Node>& net) {
         if (!upper(s)) { ++s; continue; }
         std::size_t end = s;
         while (end < input.size() && upper(end)) ++end;
-        net[s].es.push_back({s, end, NotToken, nullptr,
-                             LiteralPenalty * (end - s), false, true});
+        const bool covered = std::any_of(
+            net[s].es.begin(), net[s].es.end(),
+            [&](const Link& e) { return e.end == end && !e.expansion; });
+        if (!covered) {
+            net[s].es.push_back({s, end, NotToken, nullptr,
+                                 LiteralPenalty * (end - s), false, true});
+        }
         s = end;
     }
 }
