@@ -1104,6 +1104,13 @@ void Sime::AddUppercaseRuns(std::string_view input, std::vector<Node>& net) {
     }
 }
 
+// An English completion never starts inside a capital run: BBC must not offer
+// BB + CNN, nor NTP NT + Paris.
+bool Sime::InsideUppercaseRun(std::string_view input, std::size_t s) {
+    auto upper = [&](std::size_t i) { return input[i] >= 'A' && input[i] <= 'Z'; };
+    return s > 0 && upper(s - 1) && upper(s);
+}
+
 void Sime::InitNet(std::string_view input,
                       std::vector<Node>& net,
                       bool expansion, std::size_t forced_boundary) const {
@@ -1288,7 +1295,7 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
-            if (saw_incomplete) {
+            if (saw_incomplete && !InsideUppercaseRun(input, s)) {
                 std::string_view suffix = input.substr(s);
                 auto results = dict_.Dat(Dict::LetterEn)
                     .FindWordsWithPrefix(suffix, 1024);
@@ -1459,12 +1466,10 @@ void Sime::InitNetSp(std::string_view raw,
         }
     }
 
-    // English tail completion, as in InitNet (B -> BBC), never started inside
-    // a capital run (BBC must not offer BB + CNN).
+    // English tail completion, as in InitNet (B -> BBC).
     if (expansion) {
-        auto upper = [&](std::size_t i) { return raw[i] >= 'A' && raw[i] <= 'Z'; };
         for (std::size_t s = 0; s < total; ++s) {
-            if (s > 0 && upper(s - 1) && upper(s)) continue;
+            if (InsideUppercaseRun(raw, s)) continue;
             const auto suffix = raw.substr(s);
             for (const auto& r : dict_.Dat(Dict::LetterEn)
                      .FindWordsWithPrefix(suffix, 1024)) {
