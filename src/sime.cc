@@ -264,9 +264,16 @@ std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
 TokenID Sime::ContextToken(std::string_view text) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     if (!ready_ || text.empty()) return NotToken;
-    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
-    const TokenID id = cutter_->Find(text);
-    return IsScorable(id, scorer_) ? id : NotToken;
+    // A linear scan, not the Cutter: building the Cutter's trie peaks near
+    // 100MB, which gets the iOS keyboard extension killed.
+    const std::u32string target = ustr::ToU32(text);
+    for (std::uint32_t id = StartToken; id < dict_.TokenCount(); ++id) {
+        const char32_t* chars = dict_.TokenAt(id);
+        if (chars && target == chars) {
+            return IsScorable(id, scorer_) ? id : NotToken;
+        }
+    }
+    return NotToken;
 }
 
 void Sime::ComputeEdgePenalties(std::vector<Node>& net,

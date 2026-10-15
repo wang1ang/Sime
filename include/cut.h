@@ -36,8 +36,6 @@ public:
 
     // Segment `input` (UTF-8). Returns tokens in order. Empty input → empty.
     std::vector<CutToken> Cut(std::string_view input) const;
-    // Dict token whose text is exactly `text`; NotToken when none.
-    TokenID Find(std::string_view text) const;
 
 private:
     const Dict& dict_;
