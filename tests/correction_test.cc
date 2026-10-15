@@ -91,16 +91,16 @@ int main() {
     }
 
     {
-        // Shuangpin offers English completions behind the literal letter, but
-        // never starts one inside an uppercase run (BBC must not offer BBCNN).
+        // Shuangpin offers English completions behind the literal letter, also
+        // from inside an uppercase run (BBC offers BBCNN).
         const auto b = shuangpin_engine.DecodeSentence("B", 8, /*expansion=*/true);
         if (!ExpectPrefix(b, {"B"}) || !ContainsText(b, "BBC")) {
             std::cerr << "shuangpin B did not offer B then English completions\n";
             return EXIT_FAILURE;
         }
         const auto bbc = shuangpin_engine.DecodeSentence("BBC", 8, /*expansion=*/true);
-        if (!ExpectPrefix(bbc, {"BBC"}) || ContainsText(bbc, "BBCNN")) {
-            std::cerr << "shuangpin BBC started a completion inside the uppercase run\n";
+        if (!ExpectPrefix(bbc, {"BBC"}) || !ContainsText(bbc, "BBCNN")) {
+            std::cerr << "shuangpin BBC did not offer BBC then BBCNN\n";
             return EXIT_FAILURE;
         }
     }
