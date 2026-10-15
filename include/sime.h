@@ -83,9 +83,12 @@ public:
     // UTF-8 text for a single token id, sourced from the dict's
     // mmap'd token table. Empty for NotToken or out-of-range ids.
     std::string TokenText(TokenID id) const;
-    // Segment already-written UTF-8 text into known LM token IDs. Unknown
-    // fragments are omitted so callers can safely use the result as context.
+    // Segment text for LM context. Text the LM cannot score becomes a NotToken
+    // separator; context consumers reset their n-gram state at it.
     std::vector<TokenID> Tokenize(std::string_view text) const;
+    // Context token for text committed as one unit (a symbol, literal keys):
+    // exact match only, NotToken when absent or unscorable.
+    TokenID ContextToken(std::string_view text) const;
 
     // Decode
     std::vector<DecodeResult> DecodeStr(std::string_view input,

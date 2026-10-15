@@ -27,6 +27,31 @@ constexpr std::size_t kGruCandidates = 10;
 constexpr float_t kGruPinyinScale = 0.60;
 constexpr float_t kGruT9Scale = 0.72;
 
+bool IsScorable(TokenID id, const Scorer& scorer) {
+    if (id == NotToken || id == CutUnkToken) return false;
+    Scorer::Pos next;
+    scorer.ScoreMove(scorer.StartPos(), id, next);
+    return !(next == scorer.StartPos());
+}
+
+bool IsContextSeparator(const CutToken& token, const Scorer& scorer) {
+    return token.is_unk || !IsScorable(token.id, scorer);
+}
+
+// Text the LM cannot score breaks the n-gram chain: mark it with NotToken so
+// whoever replays the context resets there instead of joining its neighbours.
+void AppendContextTokens(std::vector<TokenID>& context,
+                         const std::vector<CutToken>& cuts,
+                         const Scorer& scorer) {
+    for (const auto& token : cuts) {
+        if (!IsContextSeparator(token, scorer)) {
+            context.push_back(token.id);
+        } else if (context.empty() || context.back() != NotToken) {
+            context.push_back(NotToken);
+        }
+    }
+}
+
 void RerankWithGru(std::vector<DecodeResult>& candidates,
                    const GruReranker* reranker,
                    bool t9) {
@@ -205,7 +230,8 @@ void Sime::LearnUserSentence(const std::vector<TokenID>& context,
     if (!user_sentence_enabled_) {
         return;
     }
-    user_sentence_.Add(context, sentence);
+    const auto sep = std::find(context.rbegin(), context.rend(), NotToken);
+    user_sentence_.Add({sep.base(), context.end()}, sentence);
 }
 
 std::string Sime::TokenText(TokenID id) const {
@@ -231,12 +257,16 @@ std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
     }
     std::vector<TokenID> tokens;
     if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
-    for (const auto& token : cutter_->Cut(text)) {
-        if (!token.is_unk && token.id != NotToken) {
-            tokens.push_back(token.id);
-        }
-    }
+    AppendContextTokens(tokens, cutter_->Cut(text), scorer_);
     return tokens;
+}
+
+TokenID Sime::ContextToken(std::string_view text) const {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!ready_ || text.empty()) return NotToken;
+    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
+    const TokenID id = cutter_->Find(text);
+    return IsScorable(id, scorer_) ? id : NotToken;
 }
 
 void Sime::ComputeEdgePenalties(std::vector<Node>& net,
@@ -1597,6 +1627,8 @@ State Sime::InitialState(const std::vector<TokenID>& context) const {
     for (std::size_t i = begin; i < context.size(); ++i) {
         TokenID token = context[i];
         if (token == NotToken) {
+            pos = scorer_.StartPos();
+            last = NotToken;
             continue;
         }
         Scorer::Pos next{};
@@ -1971,9 +2003,7 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     // Reuse a previously initialized segmenter without allocating its large
     // index on a correction tap inside the memory-constrained extension.
     if (cutter_) {
-        for (const auto& token : cutter_->Cut(fixed_prefix)) {
-            if (!token.is_unk && token.id != NotToken) context.push_back(token.id);
-        }
+        AppendContextTokens(context, cutter_->Cut(fixed_prefix), scorer_);
     }
     return CollectCandidates(net, lower, correction_col, context,
                              /*full_extra=*/2, fixed_prefix,

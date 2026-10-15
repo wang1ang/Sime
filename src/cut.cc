@@ -56,6 +56,11 @@ Cutter::Cutter(const Dict& dict, const Scorer& scorer)
     dat_.Build(keys, values);
 }
 
+TokenID Cutter::Find(std::string_view text) const {
+    std::uint32_t id = 0;
+    return !text.empty() && dat_.Get(text, id) ? static_cast<TokenID>(id) : NotToken;
+}
+
 std::vector<CutToken> Cutter::Cut(std::string_view input) const {
     std::vector<CutToken> out;
     if (input.empty() || dat_.Empty()) return out;

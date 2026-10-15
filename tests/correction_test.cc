@@ -44,6 +44,37 @@ int main() {
         std::cerr << "Could not load Sime test models\n";
         return EXIT_FAILURE;
     }
+    {
+        const auto ni = engine.Tokenize("你");
+        const auto hao = engine.Tokenize("好");
+        const auto separated = engine.Tokenize(std::string("你") + "\xEE\x80\x80" + "好");
+        const auto trailing_unknown = engine.Tokenize(std::string("你") + "\xEE\x80\x80");
+        const auto doubled = engine.Tokenize(std::string("你") + "\xEE\x80\x80\xEE\x80\x81");
+        const auto spaced = engine.Tokenize("你 好");
+        if (ni.size() != 1 || hao.size() != 1 ||
+            separated != std::vector<sime::TokenID>{ni[0], sime::NotToken, hao[0]} ||
+            trailing_unknown != std::vector<sime::TokenID>{ni[0], sime::NotToken} ||
+            doubled != trailing_unknown ||
+            spaced != separated) {
+            std::cerr << "unknown text did not become a single context separator\n";
+            return EXIT_FAILURE;
+        }
+        if (engine.ContextToken("你") != ni[0] ||
+            engine.ContextToken("，") == sime::NotToken ||
+            engine.ContextToken("\xEE\x80\x80") != sime::NotToken ||
+            engine.ContextToken("你\xEE\x80\x80") != sime::NotToken) {
+            std::cerr << "ContextToken did not match whole tokens exactly\n";
+            return EXIT_FAILURE;
+        }
+        const auto plain = engine.DecodeSentence("haode", std::vector<sime::TokenID>{}, 3);
+        const auto after_separator = engine.DecodeSentence("haode", trailing_unknown, 3);
+        if (plain.empty() || after_separator.empty() ||
+            plain.front().text != after_separator.front().text ||
+            plain.front().score != after_separator.front().score) {
+            std::cerr << "context before a separator still affected decoding\n";
+            return EXIT_FAILURE;
+        }
+    }
     sime::Sime shuangpin_engine(SIME_TEST_DICT, SIME_TEST_CNT,
                                 SIME_TEST_SP_INDEX);
     if (!shuangpin_engine.Ready()) {
