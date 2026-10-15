@@ -1104,11 +1104,16 @@ void Sime::AddUppercaseRuns(std::string_view input, std::vector<Node>& net) {
     }
 }
 
-// An English completion never starts inside a capital run: BBC must not offer
-// BB + CNN, nor NTP NT + Paris.
-bool Sime::InsideUppercaseRun(std::string_view input, std::size_t s) {
+// A boundary set inside a capital run (NT picked from NTP, or its P tapped)
+// ends the run there; the rest starts a new one, or nothing would cover it.
+void Sime::SplitUppercaseRun(std::string_view input, std::size_t s,
+                             std::vector<Node>& net) {
     auto upper = [&](std::size_t i) { return input[i] >= 'A' && input[i] <= 'Z'; };
-    return s > 0 && upper(s - 1) && upper(s);
+    if (s == 0 || s >= input.size() || !upper(s - 1) || !upper(s)) return;
+    std::size_t end = s;
+    while (end < input.size() && upper(end)) ++end;
+    net[s].es.push_back({s, end, NotToken, nullptr,
+                         LiteralPenalty * (end - s), false, true});
 }
 
 void Sime::InitNet(std::string_view input,
@@ -1295,7 +1300,7 @@ void Sime::InitNet(std::string_view input,
                     }
                 }
             }
-            if (saw_incomplete && !InsideUppercaseRun(input, s)) {
+            if (saw_incomplete) {
                 std::string_view suffix = input.substr(s);
                 auto results = dict_.Dat(Dict::LetterEn)
                     .FindWordsWithPrefix(suffix, 1024);
@@ -1469,7 +1474,6 @@ void Sime::InitNetSp(std::string_view raw,
     // English tail completion, as in InitNet (B -> BBC).
     if (expansion) {
         for (std::size_t s = 0; s < total; ++s) {
-            if (InsideUppercaseRun(raw, s)) continue;
             const auto suffix = raw.substr(s);
             for (const auto& r : dict_.Dat(Dict::LetterEn)
                      .FindWordsWithPrefix(suffix, 1024)) {
@@ -1865,6 +1869,7 @@ void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
                 net[anc.a].es.push_back(
                     {anc.a, anc.b, NotToken, nullptr, 0, false, true});
             }
+            SplitUppercaseRun(input, anc.b, net);
             continue;
         }
 
@@ -1944,6 +1949,15 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     std::vector<Node> net;
     if (has_sp_index_) InitNetSp(lower, net, expansion);
     else InitNet(lower, net, expansion, correction_col);
+    // The tapped segment starts a word. English is tapped as a whole, so no
+    // English edge may cross its column (NTP when tapping P of NT|P); Chinese
+    // is tapped per character, so its words may (价 of 性价比 -> 价比).
+    for (auto& col : net) {
+        std::erase_if(col.es, [&](const Link& e) {
+            return e.english && e.start < correction_col && e.end > correction_col;
+        });
+    }
+    SplitUppercaseRun(lower, correction_col, net);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
     for (auto& col : net) col.states.SetMaxTop(BeamSize);

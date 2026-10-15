@@ -228,7 +228,8 @@ private:
 
     // Lattice building
     static void AddUppercaseRuns(std::string_view input, std::vector<Node>& net);
-    static bool InsideUppercaseRun(std::string_view input, std::size_t s);
+    static void SplitUppercaseRun(std::string_view input, std::size_t s,
+                                  std::vector<Node>& net);
     void InitNet(std::string_view input,
                     std::vector<Node>& net,
                     bool expansion = true,

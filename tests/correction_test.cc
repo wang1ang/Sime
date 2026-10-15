@@ -372,6 +372,24 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Picking NT out of NTP pins [0,2) inside the capital run; P must stay.
+    for (const sime::Sime* e : {&engine, &shuangpin_engine}) {
+        const auto r = e->DecodeSentenceWithAnchors(
+            "NTP", {}, {{0, 2, true, 0, "NT"}}, 0, true);
+        if (!ExpectPrefix(r, {"NTP"})) {
+            std::cerr << "anchor NT@[0,2) in NTP dropped the trailing P\n";
+            return EXIT_FAILURE;
+        }
+        // Tapping that P re-picks from column 2; the word NTP must not
+        // leak a bogus "P" spanning all three keys.
+        const auto c = e->DecodeCorrection("NTP", "NT", 2, 10, true, {});
+        if (c.empty() || c[0].text != "P" ||
+            c[0].segment_keys != std::vector<std::size_t>{1}) {
+            std::cerr << "correction at P of NTP should offer P over one key\n";
+            return EXIT_FAILURE;
+        }
+    }
+
     // Anchoring 中 at [0,2) keeps 中国 (the word spans past letter 2 but its
     // first piece aligns to [0,2)=中) and drops every 种/other homophone path.
     {
