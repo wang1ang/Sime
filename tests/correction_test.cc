@@ -1,3 +1,4 @@
+#include "cut.h"
 #include "sime.h"
 
 #include <cstdlib>
@@ -43,6 +44,31 @@ int main() {
     if (!engine.Ready()) {
         std::cerr << "Could not load Sime test models\n";
         return EXIT_FAILURE;
+    }
+    {
+        sime::Dict dict;
+        sime::Scorer scorer;
+        if (!dict.Load(SIME_TEST_DICT) || !scorer.Load(SIME_TEST_CNT)) {
+            std::cerr << "Could not load models for the segmenter check\n";
+            return EXIT_FAILURE;
+        }
+        const sime::Cutter cutter(dict, scorer);
+        for (const std::string_view text :
+             {"钵钵", "钵钵鸡", "今天天气很好", "是中国对外开放以来成立的最早的合资企业之一",
+              "你好，world 123！", "abc中文", "😀表情", ""}) {
+            const auto expected = cutter.Cut(text);
+            const auto scanned = sime::CutByScan(dict, scorer, text);
+            bool same = expected.size() == scanned.size();
+            for (std::size_t i = 0; same && i < expected.size(); ++i) {
+                same = expected[i].id == scanned[i].id &&
+                       expected[i].text == scanned[i].text &&
+                       expected[i].is_unk == scanned[i].is_unk;
+            }
+            if (!same) {
+                std::cerr << "CutByScan diverged from Cutter on " << text << "\n";
+                return EXIT_FAILURE;
+            }
+        }
     }
     {
         const auto ni = engine.Tokenize("你");

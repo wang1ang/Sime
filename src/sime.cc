@@ -256,8 +256,7 @@ std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
         return {};
     }
     std::vector<TokenID> tokens;
-    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
-    AppendContextTokens(tokens, cutter_->Cut(text), scorer_);
+    AppendContextTokens(tokens, CutByScan(dict_, scorer_, text), scorer_);
     return tokens;
 }
 
@@ -2024,11 +2023,7 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     Process(net);
 
     std::vector<TokenID> context(host_context.begin(), host_context.end());
-    // Reuse a previously initialized segmenter without allocating its large
-    // index on a correction tap inside the memory-constrained extension.
-    if (cutter_) {
-        AppendContextTokens(context, cutter_->Cut(fixed_prefix), scorer_);
-    }
+    AppendContextTokens(context, CutByScan(dict_, scorer_, fixed_prefix), scorer_);
     return CollectCandidates(net, lower, correction_col, context,
                              /*full_extra=*/2, fixed_prefix,
                              prefix_syllables, num);

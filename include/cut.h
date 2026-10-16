@@ -45,4 +45,10 @@ private:
     trie::DoubleArray dat_;
 };
 
+// Same segmentation as Cutter::Cut without its index, whose construction
+// spikes tens of MB and gets the iOS keyboard extension killed. Scans the
+// whole vocabulary per call, so meant for short text.
+std::vector<CutToken> CutByScan(const Dict& dict, const Scorer& scorer,
+                                std::string_view input);
+
 } // namespace sime
