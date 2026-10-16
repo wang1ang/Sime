@@ -54,7 +54,7 @@ public:
     // Migration path for vocab-mismatched files. Reads the file
     // ignoring stored token IDs, joins each paragraph's text column
     // back to a continuous string, and re-tokenizes via `tokenize`
-    // (typically a Cutter.Cut bound by Sime). Each new token becomes
+    // (CutByScan bound by Sime). Each new token becomes
     // its own Selection. Caller persists the migrated state with a
     // fresh vocab_sig.
     using TokenizeFn =

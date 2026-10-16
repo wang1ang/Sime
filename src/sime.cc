@@ -197,13 +197,12 @@ bool Sime::LoadUserSentence(const std::filesystem::path& path) {
 
     // Vocab mismatch (LM regenerated, token IDs shifted). Try to
     // migrate: re-tokenize each paragraph's text under the new
-    // vocabulary via Cutter, then persist immediately so the file is
-    // consistent and next load takes the fast path.
+    // vocabulary, then persist immediately so the file is consistent
+    // and next load takes the fast path.
     if (!ready_) return false;
-    if (!cutter_) cutter_ = std::make_unique<Cutter>(dict_, scorer_);
     auto tokenize = [this](std::string_view text) {
         std::vector<std::pair<TokenID, std::string>> out;
-        auto cuts = cutter_->Cut(text);
+        auto cuts = CutByScan(dict_, scorer_, text);
         out.reserve(cuts.size());
         for (auto& ct : cuts) {
             TokenID id = ct.is_unk ? NotToken : ct.id;
@@ -263,8 +262,8 @@ std::vector<TokenID> Sime::Tokenize(std::string_view text) const {
 TokenID Sime::ContextToken(std::string_view text) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     if (!ready_ || text.empty()) return NotToken;
-    // A linear scan, not the Cutter: building the Cutter's trie peaks near
-    // 100MB, which gets the iOS keyboard extension killed.
+    // A linear scan: an index over the vocabulary spikes memory past the
+    // iOS keyboard extension's limit.
     const std::u32string target = ustr::ToU32(text);
     for (std::uint32_t id = StartToken; id < dict_.TokenCount(); ++id) {
         const char32_t* chars = dict_.TokenAt(id);

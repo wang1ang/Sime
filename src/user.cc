@@ -236,7 +236,7 @@ bool UserSentence::LoadAndMigrate(const std::filesystem::path& path,
         }
         // Take only the text column (after tab); old IDs are useless
         // under the new vocab. Strip the per-token spaces we wrote at
-        // save time so Cutter sees an unbroken run.
+        // save time so the segmenter sees an unbroken run.
         auto tab = line.find('\t');
         if (tab == std::string::npos) {
             continue;
