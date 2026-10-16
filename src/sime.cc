@@ -2106,29 +2106,64 @@ static bool IsAssocPunct(const char32_t* s) {
     return false;
 }
 
+float_t Sime::CostGiven(const std::vector<TokenID>& history, TokenID w) const {
+    const auto tail = static_cast<std::size_t>(std::max(scorer_.Num() - 1, 1));
+    Scorer::Pos pos{};
+    std::size_t s = history.size() > tail ? history.size() - tail : 0;
+    for (std::size_t i = s; i < history.size(); ++i) {
+        Scorer::Pos n{};
+        scorer_.ScoreMove(pos, history[i], n);
+        pos = n;
+    }
+    Scorer::Pos r{};
+    return scorer_.ScoreMove(pos, w, r);
+}
+
+// Dict words strictly extending `head`, as (cost relative to `base`, result).
+void Sime::AppendCompletions(const std::u32string& head,
+                             const std::vector<TokenID>& history,
+                             float_t base,
+                             std::unordered_set<std::string>& seen,
+                             std::vector<std::pair<float_t, DecodeResult>>& out) const {
+    if (head.empty() || IsAssocPunct(head.c_str())) return;
+    const std::size_t head_len = head.size();
+    const uint32_t count = dict_.TokenCount();
+    for (uint32_t id = StartToken; id < count; ++id) {
+        const char32_t* w = dict_.TokenAt(id);
+        if (!w || w[0] == 0) continue;
+        std::size_t k = 0;
+        for (; k < head_len && w[k] != 0; ++k)
+            if (w[k] != head[k]) break;
+        if (k != head_len || w[head_len] == 0) continue;  // not a strict extension
+        if (IsAssocPunct(w + head_len)) continue;         // tail starts with punct
+        const float_t cost = CostGiven(history, id) - base;
+        std::u32string u32(w, w + U32Len(w));
+        std::string text = TextFromU32(u32);
+        if (!seen.insert(text).second) continue;
+        out.push_back({cost, {std::move(text), {}, {id}, -cost, head_len, {}, {}}});
+    }
+}
+
+static std::vector<DecodeResult> TakeBest(
+    std::vector<std::pair<float_t, DecodeResult>>& cands, std::size_t num) {
+    std::sort(cands.begin(), cands.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (cands.size() > num) cands.resize(num);
+    std::vector<DecodeResult> out;
+    out.reserve(cands.size());
+    for (auto& c : cands) out.push_back(std::move(c.second));
+    return out;
+}
+
 std::vector<DecodeResult> Sime::Associate(
     const std::vector<TokenID>& context,
     std::size_t num) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
-    std::vector<DecodeResult> out;
-    if (!ready_ || num == 0 || context.empty()) return out;
+    if (!ready_ || num == 0 || context.empty()) return {};
     MaybeTrimCaches();
 
     const auto tail = static_cast<std::size_t>(std::max(scorer_.Num() - 1, 1));
-    auto cost_given = [&](const std::vector<TokenID>& hist, TokenID w) -> float_t {
-        Scorer::Pos pos{};
-        std::size_t s = hist.size() > tail ? hist.size() - tail : 0;
-        for (std::size_t i = s; i < hist.size(); ++i) {
-            Scorer::Pos n{};
-            scorer_.ScoreMove(pos, hist[i], n);
-            pos = n;
-        }
-        Scorer::Pos r{};
-        return scorer_.ScoreMove(pos, w, r);
-    };
-
-    struct Cand { float_t cost; DecodeResult r; };
-    std::vector<Cand> cands;
+    std::vector<std::pair<float_t, DecodeResult>> cands;
     std::unordered_set<std::string> seen;
 
     // ① next-word: likely token following the full context.
@@ -2152,38 +2187,24 @@ std::vector<DecodeResult> Sime::Associate(
     }
 
     // ② completion: dict words whose text starts with the trailing token.
-    {
-        TokenID last = context.back();
-        const char32_t* head = dict_.TokenAt(last);
-        if (head && head[0] != 0 && !IsAssocPunct(head)) {
-            const std::size_t head_len = U32Len(head);
-            std::vector<TokenID> prev(context.begin(), context.end() - 1);
-            const float_t base = cost_given(prev, last);
-            const uint32_t count = dict_.TokenCount();
-            for (uint32_t id = StartToken; id < count; ++id) {
-                const char32_t* w = dict_.TokenAt(id);
-                if (!w || w[0] == 0) continue;
-                std::size_t k = 0;
-                for (; k < head_len && w[k] != 0; ++k)
-                    if (w[k] != head[k]) break;
-                if (k != head_len || w[head_len] == 0) continue;  // not a strict extension
-                if (IsAssocPunct(w + head_len)) continue;         // tail starts with punct
-                const float_t cost = cost_given(prev, id) - base;
-                std::u32string u32(w, w + U32Len(w));
-                std::string text = TextFromU32(u32);
-                if (!seen.insert(text).second) continue;
-                cands.push_back({cost,
-                    {std::move(text), {}, {id}, -cost, head_len, {}, {}}});
-            }
-        }
+    if (const char32_t* head = dict_.TokenAt(context.back())) {
+        std::vector<TokenID> prev(context.begin(), context.end() - 1);
+        AppendCompletions({head, head + U32Len(head)}, prev,
+                          CostGiven(prev, context.back()), seen, cands);
     }
+    return TakeBest(cands, num);
+}
 
-    std::sort(cands.begin(), cands.end(),
-              [](const Cand& a, const Cand& b) { return a.cost < b.cost; });
-    if (cands.size() > num) cands.resize(num);
-    out.reserve(cands.size());
-    for (auto& c : cands) out.push_back(std::move(c.r));
-    return out;
+std::vector<DecodeResult> Sime::Complete(const std::vector<TokenID>& context,
+                                         std::string_view prefix,
+                                         std::size_t num) const {
+    std::lock_guard<std::mutex> lock(decode_mutex_);
+    if (!ready_ || num == 0 || prefix.empty()) return {};
+    MaybeTrimCaches();
+    std::vector<std::pair<float_t, DecodeResult>> cands;
+    std::unordered_set<std::string> seen;
+    AppendCompletions(ustr::ToU32(prefix), context, 0, seen, cands);
+    return TakeBest(cands, num);
 }
 
 std::vector<DecodeResult> Sime::GetTokens(

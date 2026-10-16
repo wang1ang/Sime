@@ -10,6 +10,8 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace sime {
@@ -147,6 +149,13 @@ public:
     std::vector<DecodeResult> Associate(
         const std::vector<TokenID>& context,
         std::size_t num = 10) const;
+
+    // Completion of `prefix`, text not yet a token (a backspace left a
+    // fragment): dict words strictly extending it, scored after `context`.
+    // `cnt` is the prefix's character length.
+    std::vector<DecodeResult> Complete(const std::vector<TokenID>& context,
+                                       std::string_view prefix,
+                                       std::size_t num = 10) const;
 
     // Prefix completion: return tokens starting with `prefix`, sorted by
     // unigram score. Default searches both English and pinyin DATs (mixed
@@ -295,6 +304,11 @@ private:
     // daemon's memory footprint stays bounded. Soft (no allocator
     // churn): ~free in latency.
     void MaybeTrimCaches() const;
+    float_t CostGiven(const std::vector<TokenID>& history, TokenID w) const;
+    void AppendCompletions(const std::u32string& head,
+                           const std::vector<TokenID>& history, float_t base,
+                           std::unordered_set<std::string>& seen,
+                           std::vector<std::pair<float_t, DecodeResult>>& out) const;
     static constexpr std::size_t kSepCacheTrimInterval = 5000;
     mutable std::size_t decode_count_ = 0;
     // Dict::scratch_ and the trie separator caches are intentionally reused
