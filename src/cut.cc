@@ -24,27 +24,42 @@ std::size_t Utf8CharBytes(unsigned char lead) {
     return 1;
 }
 
+// Byte offset of every character start, then input.size().
+std::vector<std::size_t> CharOffsets(std::string_view input) {
+    std::vector<std::size_t> offsets;
+    for (std::size_t i = 0; i < input.size();) {
+        offsets.push_back(i);
+        i += std::min(Utf8CharBytes(static_cast<unsigned char>(input[i])),
+                      input.size() - i);
+    }
+    offsets.push_back(input.size());
+    return offsets;
+}
+
 struct CutEdge {
     std::size_t end;  // byte end position
     TokenID id;
 };
 
+using CutEdges = std::vector<std::vector<CutEdge>>;
+
+bool HasEdgeTo(const std::vector<CutEdge>& out, std::size_t end) {
+    return std::any_of(out.begin(), out.end(),
+                       [&](const CutEdge& e) { return e.end == end; });
+}
+
 // Where no token covers a lone character, add an UNK edge so Viterbi can
 // still advance; Scorer backs off to UnknownPenalty.
-void AddUnkEdges(std::string_view input, std::vector<std::vector<CutEdge>>& edges) {
-    const std::size_t N = input.size();
-    for (std::size_t i = 0; i < N;) {
-        std::size_t char_bytes = Utf8CharBytes(static_cast<unsigned char>(input[i]));
-        if (i + char_bytes > N) char_bytes = N - i;
-        const bool covered = std::any_of(edges[i].begin(), edges[i].end(),
-            [&](const CutEdge& e) { return e.end == i + char_bytes; });
-        if (!covered) edges[i].push_back({i + char_bytes, CutUnkToken});
-        i += char_bytes;
+void AddUnkEdges(const std::vector<std::size_t>& offsets, CutEdges& edges) {
+    for (std::size_t k = 0; k + 1 < offsets.size(); ++k) {
+        if (!HasEdgeTo(edges[offsets[k]], offsets[k + 1])) {
+            edges[offsets[k]].push_back({offsets[k + 1], CutUnkToken});
+        }
     }
 }
 
 std::vector<CutToken> SearchLattice(const Scorer& scorer, std::string_view input,
-                                    const std::vector<std::vector<CutEdge>>& edges) {
+                                    const CutEdges& edges) {
     std::vector<CutToken> out;
     const std::size_t N = input.size();
     // Positions between char boundaries have no edges and no incoming
@@ -130,44 +145,35 @@ Cutter::Cutter(const Dict& dict, const Scorer& scorer)
 
 std::vector<CutToken> Cutter::Cut(std::string_view input) const {
     if (input.empty() || dat_.Empty()) return {};
-    const std::size_t N = input.size();
-    std::vector<std::vector<CutEdge>> edges(N);
-    // Walk UTF-8 codepoint boundaries; at each boundary do one prefix lookup.
-    for (std::size_t i = 0; i < N;) {
-        std::size_t char_bytes = Utf8CharBytes(
-            static_cast<unsigned char>(input[i]));
-        if (i + char_bytes > N) char_bytes = N - i;
+    const auto offsets = CharOffsets(input);
+    CutEdges edges(input.size());
+    // One prefix lookup at each character boundary.
+    for (std::size_t k = 0; k + 1 < offsets.size(); ++k) {
+        const std::size_t i = offsets[k];
         for (const auto& m : dat_.PrefixSearch(input.substr(i), PrefixMax)) {
             edges[i].push_back({i + m.length, static_cast<TokenID>(m.value)});
         }
-        i += char_bytes;
     }
-    AddUnkEdges(input, edges);
+    AddUnkEdges(offsets, edges);
     return SearchLattice(scorer_, input, edges);
 }
 
 std::vector<CutToken> CutByScan(const Dict& dict, const Scorer& scorer,
                                 std::string_view input) {
     if (input.empty()) return {};
-    const std::size_t N = input.size();
-    // Codepoints of the input with their byte offsets (plus the end).
+    const auto offsets = CharOffsets(input);
     std::u32string chars;
-    std::vector<std::size_t> offsets;
-    for (std::size_t i = 0; i < N;) {
-        std::size_t char_bytes = Utf8CharBytes(static_cast<unsigned char>(input[i]));
-        if (i + char_bytes > N) char_bytes = N - i;
-        const std::u32string one = ustr::ToU32(input.substr(i, char_bytes));
+    for (std::size_t k = 0; k + 1 < offsets.size(); ++k) {
+        const std::u32string one =
+            ustr::ToU32(input.substr(offsets[k], offsets[k + 1] - offsets[k]));
         // An undecodable byte matches no token.
         chars.push_back(one.size() == 1 ? one[0] : static_cast<char32_t>(-1));
-        offsets.push_back(i);
-        i += char_bytes;
     }
-    offsets.push_back(N);
 
     std::unordered_map<char32_t, std::vector<std::size_t>> starts;
     for (std::size_t k = 0; k < chars.size(); ++k) starts[chars[k]].push_back(k);
 
-    std::vector<std::vector<CutEdge>> edges(N);
+    CutEdges edges(input.size());
     for (std::uint32_t id = StartToken; id < dict.TokenCount(); ++id) {
         const char32_t* token = dict.TokenAt(id);
         if (!token || token[0] == 0) continue;
@@ -180,17 +186,12 @@ std::vector<CutToken> CutByScan(const Dict& dict, const Scorer& scorer,
                 ++len;
             }
             if (token[len] != 0) continue;
-            const std::size_t from = offsets[k];
-            const std::size_t to = offsets[k + len];
             // Same text under several ids: keep the first, as ContextToken.
-            auto& out = edges[from];
-            if (std::none_of(out.begin(), out.end(),
-                             [&](const CutEdge& e) { return e.end == to; })) {
-                out.push_back({to, id});
-            }
+            auto& out = edges[offsets[k]];
+            if (!HasEdgeTo(out, offsets[k + len])) out.push_back({offsets[k + len], id});
         }
     }
-    AddUnkEdges(input, edges);
+    AddUnkEdges(offsets, edges);
     return SearchLattice(scorer, input, edges);
 }
 
