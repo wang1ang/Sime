@@ -1804,7 +1804,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     }
 
     while (layer2_col < input.size() && net[layer2_col].es.size() == 1 &&
-           net[layer2_col].es[0].id == NotToken) {
+           ExtractText({net[layer2_col].es[0]}, input).empty()) {
         ++layer2_col;
     }
     if (layer2_col >= net.size()) return results;
@@ -1815,10 +1815,9 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     std::vector<DecodeResult> layer2;
     std::unordered_map<std::string, std::size_t> index_by_text;
     for (const auto& edge : net[layer2_col].es) {
-        if (edge.id == NotToken) continue;
-        std::u32string text_u32 = ToText(edge);
-        if (text_u32.empty()) continue;
-        std::string text = TextFromU32(text_u32);
+        // Uppercase literals are NotToken too; only separators render empty.
+        std::string text = ExtractText({edge}, input);
+        if (text.empty()) continue;
         if (dedup.contains(text)) continue;
         Scorer::Pos next{};
         const float_t score = -scorer_.ScoreMove(initial.pos, edge.id, next)
