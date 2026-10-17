@@ -40,19 +40,15 @@ constexpr ReadingCostEntry kReadingCosts[] = {
 
 // The LM scores characters, not readings, so a single character typed with a
 // rare reading (厂 as an, 都 as du) would otherwise keep its full frequency.
-// A listed character with an unlisted reading gets the cap; unlisted
-// characters cost nothing.
-constexpr float_t kReadingCostCap = 8.0;
-
+// The table lists only nonzero costs.
 float_t ReadingCost(char32_t ch, std::string_view reading) {
     auto it = std::lower_bound(
         std::begin(kReadingCosts), std::end(kReadingCosts), ch,
         [](const ReadingCostEntry& e, char32_t c) { return e.ch < c; });
-    if (it == std::end(kReadingCosts) || it->ch != ch) return 0;
     for (; it != std::end(kReadingCosts) && it->ch == ch; ++it) {
         if (reading == it->reading) return static_cast<float_t>(it->cost) / 16;
     }
-    return kReadingCostCap;
+    return 0;
 }
 
 bool IsScorable(TokenID id, const Scorer& scorer) {
