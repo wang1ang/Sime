@@ -75,8 +75,12 @@ void NetStates::Insert(const State& state) {
     } else {
         TopStates& bucket = it->second;
         inserted = bucket.Push(state);
-        if (bucket.heap_idx < top_score_.size() &&
+        if (inserted && bucket.heap_idx < top_score_.size() &&
             top_score_[bucket.heap_idx].second == &bucket) {
+            // The key must track the bucket's worst state, or eviction
+            // drops a good state while a worse one hides in this bucket.
+            top_score_[bucket.heap_idx].first = bucket.Top().score;
+            AdjustUp(bucket.heap_idx);
             AdjustDown(bucket.heap_idx);
         }
     }
