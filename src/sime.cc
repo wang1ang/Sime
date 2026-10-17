@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <sstream>
 #include <system_error>
@@ -26,6 +27,33 @@ namespace {
 constexpr std::size_t kGruCandidates = 10;
 constexpr float_t kGruPinyinScale = 0.60;
 constexpr float_t kGruT9Scale = 0.72;
+
+struct ReadingCostEntry {
+    char32_t ch;
+    char reading[7];
+    uint8_t cost;  // -ln(P(reading) / P(top reading)) * 16
+};
+
+constexpr ReadingCostEntry kReadingCosts[] = {
+#include "reading.inc"
+};
+
+// The LM scores characters, not readings, so a single character typed with a
+// rare reading (厂 as an, 都 as du) would otherwise keep its full frequency.
+// A listed character with an unlisted reading gets the cap; unlisted
+// characters cost nothing.
+constexpr float_t kReadingCostCap = 8.0;
+
+float_t ReadingCost(char32_t ch, std::string_view reading) {
+    auto it = std::lower_bound(
+        std::begin(kReadingCosts), std::end(kReadingCosts), ch,
+        [](const ReadingCostEntry& e, char32_t c) { return e.ch < c; });
+    if (it == std::end(kReadingCosts) || it->ch != ch) return 0;
+    for (; it != std::end(kReadingCosts) && it->ch == ch; ++it) {
+        if (reading == it->reading) return static_cast<float_t>(it->cost) / 16;
+    }
+    return kReadingCostCap;
+}
 
 bool IsScorable(TokenID id, const Scorer& scorer) {
     if (id == NotToken || id == CutUnkToken) return false;
@@ -275,7 +303,7 @@ TokenID Sime::ContextToken(std::string_view text) const {
 }
 
 void Sime::ComputeEdgePenalties(std::vector<Node>& net,
-                                std::string_view input) {
+                                std::string_view input) const {
     // English penalty: only "long input + full coverage" English gets
     // the lighter EnglishPenalty (e.g. google on 466453, hello on
     // input "hello"). Everything else (partial-coverage like zg in
@@ -301,6 +329,12 @@ void Sime::ComputeEdgePenalties(std::vector<Node>& net,
             }
             edge.penalty = en_pen
                 + (edge.expansion ? expansion_penalty : 0.0f);
+            if (!edge.english && !std::strchr(edge.pieces, '\'')) {
+                const char32_t* text = dict_.TokenAt(edge.id);
+                if (text && text[0] && !text[1]) {
+                    edge.penalty += ReadingCost(text[0], edge.pieces);
+                }
+            }
             // An English word still being typed (BB) keeps its completions
             // (BBC), but behind the exact word itself.
             if (edge.english && edge.expansion) {

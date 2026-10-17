@@ -251,8 +251,8 @@ private:
                    std::vector<Node>& net,
                    bool expansion = true,
                    const std::vector<Anchor>& anchors = {}) const;
-    static void ComputeEdgePenalties(std::vector<Node>& net,
-                                     std::string_view input);
+    void ComputeEdgePenalties(std::vector<Node>& net,
+                              std::string_view input) const;
     // Prune the lattice to anchor-consistent edges (see struct Anchor). Runs
     // after InitNet, before penalties/pruning/beam.
     void ApplyAnchors(std::vector<Node>& net, std::string_view input,
