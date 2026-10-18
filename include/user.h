@@ -20,9 +20,14 @@ public:
     using Sentence = std::vector<TokenID>;
     using TokenTextFn = std::function<std::string(TokenID)>;
 
-    // One candidate pick: the token IDs the decoder produced.
+    // Decoded pinyin per token (DecodeResult::readings); "" when unknown.
+    using Readings = std::vector<std::string>;
+
+    // One candidate pick; a polyphone (行 hang/xing) is learned under the
+    // reading the user accepted.
     struct Selection {
         Sentence tokens;
+        Readings readings;  // aligned with tokens
     };
 
     // One paragraph = a sequence of consecutive selections that share
@@ -70,32 +75,52 @@ public:
     void SetWeight(float_t weight);
     float_t Weight() const { return weight_; }
 
-    // Records a single user pick. `context` is the recent committed
-    // tokens (typically `scorer_.Num()-1` deep). If the most recent
-    // paragraph's flattened tail equals `context`, the new selection
-    // is appended to that paragraph; otherwise a new paragraph starts.
-    void Add(const Sentence& context, const Sentence& tokens);
+    // Records a single user pick after `context`, the recent committed
+    // tokens. The pick extends the latest paragraph when its tail and
+    // `context` agree where they overlap; otherwise a new paragraph starts.
+    // `readings` is aligned with `tokens` and `context_readings` with
+    // `context`; either may be empty when unknown.
+    void Add(const Sentence& context, const Sentence& tokens,
+             const Readings& readings = {},
+             const Readings& context_readings = {});
 
-    std::uint32_t UnigramCount(TokenID token) const;
-    std::uint32_t BigramCount(TokenID prev, TokenID cur) const;
+    // Counts of `cur` read as `reading` (after `prev` read as
+    // `prev_reading`); picks learned without a reading count toward every
+    // reading. An empty `prev_reading`, as for host text, sums all of them.
+    std::uint32_t UnigramCount(TokenID token, std::string_view reading = {}) const;
+    std::uint32_t BigramCount(TokenID prev, TokenID cur,
+                              std::string_view reading = {},
+                              std::string_view prev_reading = {}) const;
     std::uint32_t TotalUnigramCount() const { return total_unigram_count_; }
-    // N1+(prev, *) — number of distinct successor tokens after `prev`.
+    // N1+(prev, *) — number of distinct successors after `prev`.
     // Used by Ney's absolute-discounting backoff weight (γ).
     std::uint32_t DistinctSuccessors(TokenID prev) const;
-    // Cost adjustment to add to LM cost for a transition prev→cur.
+    // Cost adjustment to add to LM cost for a transition prev→cur, where
+    // each is read as its reading (an edge's pieces; null = unknown).
     // `lm_step` is the LM cost (positive, = -log P) for the same
     // transition. Returns ≤ 0; never makes the cost worse than LM
     // alone. Mirrors libime's UserLanguageModel::score: linear mixture
     // in probability space, max-floored at the LM score.
-    float_t CostAdjustment(TokenID prev, TokenID cur, float_t lm_step) const;
+    float_t CostAdjustment(TokenID prev, const char* prev_reading,
+                           TokenID cur, const char* reading,
+                           float_t lm_step) const;
 
     const std::deque<Entry>& Sentences() const { return sentences_; }
 
 private:
-    static std::uint64_t BigramKey(TokenID prev, TokenID cur);
-    static Sentence CleanSentence(const Sentence& sentence);
-    static Sentence Flatten(const Entry& entry);
-    static bool EndsWith(const Sentence& sentence, const Sentence& suffix);
+    // (token, reading) packed into one key; an empty reading keys the
+    // token alone.
+    static std::uint64_t WordKey(TokenID token, std::string_view reading);
+    static std::uint64_t BigramKey(std::uint64_t prev, std::uint64_t word);
+    static Selection CleanSelection(const Sentence& tokens,
+                                    const Readings& readings);
+    static bool TailsAgree(const Entry& entry, const Sentence& context,
+                           const Readings& context_readings);
+    std::uint32_t WordCount(std::uint64_t word) const;
+    std::uint32_t BigramWordCount(TokenID prev, std::uint64_t word) const;
+    std::uint32_t WordBigramCount(std::uint64_t prev, std::uint64_t word) const;
+    void CountBigram(TokenID prev, std::string_view prev_reading,
+                     std::uint64_t word, int delta);
 
     void StartParagraph(Selection selection);
     void AppendToLatest(Selection selection);
@@ -107,11 +132,18 @@ private:
     // weight (constants.h: DEFAULT_USER_LANGUAGE_MODEL_USER_WEIGHT).
     float_t weight_ = 0.2;
     std::deque<Entry> sentences_;
-    std::unordered_map<TokenID, std::uint32_t> unigram_;
+    // Per token over all readings: the bigram history's count, and a
+    // cheap miss test before hashing an edge's reading.
+    std::unordered_map<TokenID, std::uint32_t> token_count_;
+    std::unordered_map<std::uint64_t, std::uint32_t> word_count_;
+    // (prev token, cur word) → count.
     std::unordered_map<std::uint64_t, std::uint32_t> bigram_;
     // N1+(prev, *): distinct-successor count per prev token. Maintained
     // incrementally when bigram counts cross the 0 boundary.
     std::unordered_map<TokenID, std::uint32_t> distinct_successors_;
+    // The same keyed by the prev word, so a known prev reading is told apart.
+    std::unordered_map<std::uint64_t, std::uint32_t> word_bigram_;
+    std::unordered_map<std::uint64_t, std::uint32_t> word_successors_;
     std::uint32_t total_unigram_count_ = 0;
 };
 

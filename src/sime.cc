@@ -249,12 +249,22 @@ bool Sime::SaveUserSentence(const std::filesystem::path& path) const {
 }
 
 void Sime::LearnUserSentence(const std::vector<TokenID>& context,
-                             const std::vector<TokenID>& sentence) {
+                             const std::vector<TokenID>& sentence,
+                             const std::vector<std::string>& readings,
+                             const std::vector<std::string>& context_readings) {
     if (!user_sentence_enabled_) {
         return;
     }
     const auto sep = std::find(context.rbegin(), context.rend(), NotToken);
-    user_sentence_.Add({sep.base(), context.end()}, sentence);
+    const auto begin = static_cast<std::size_t>(sep.base() - context.begin());
+    std::vector<std::string> tail_readings;
+    if (context_readings.size() == context.size()) {
+        tail_readings.assign(context_readings.begin() +
+                                 static_cast<std::ptrdiff_t>(begin),
+                             context_readings.end());
+    }
+    user_sentence_.Add({sep.base(), context.end()}, sentence, readings,
+                       tail_readings);
 }
 
 std::string Sime::TokenText(TokenID id) const {
@@ -788,6 +798,15 @@ std::vector<TokenID> Sime::ExtractTokens(
     return ids;
 }
 
+std::vector<std::string> Sime::ExtractReadings(const std::vector<Link>& path) {
+    std::vector<std::string> readings;
+    for (const auto& link : path) {
+        if (link.id == NotToken) continue;
+        readings.emplace_back(link.pieces ? link.pieces : "");
+    }
+    return readings;
+}
+
 void Sime::ExtractSegments(const std::vector<Link>& path,
                            std::string_view input,
                            std::vector<std::size_t>& keys,
@@ -946,7 +965,8 @@ std::vector<DecodeResult> Sime::DecodeNumSentence(
 
             l1.push_back({std::move(text), std::move(py),
                           ExtractTokens(path),
-                          -tail[rank].score, full_cnt, {}, {}});
+                          -tail[rank].score, full_cnt, {}, {},
+                          ExtractReadings(path)});
         }
         std::sort(l1.begin(), l1.end(),
                   [](const DecodeResult& a, const DecodeResult& b) {
@@ -1009,7 +1029,8 @@ std::vector<DecodeResult> Sime::DecodeNumSentence(
             best_l2,
             l2_index_by_text,
             {std::move(text_utf8), std::move(edge_py),
-             ExtractTokens({edge}), score, cnt, {}, {}});
+             ExtractTokens({edge}), score, cnt, {}, {},
+             ExtractReadings({edge})});
     }
 
     for (auto& entry : best_l2) {
@@ -1065,7 +1086,8 @@ std::vector<DecodeResult> Sime::DecodeNumStr(
         results.push_back({std::move(text), std::move(py),
                            ExtractTokens(path),
                            -tail_states[rank].score,
-                           start.size() + nums.size(), {}, {}});
+                           start.size() + nums.size(), {}, {},
+                           ExtractReadings(path)});
     }
 
     return results;
@@ -1137,6 +1159,7 @@ std::vector<DecodeResult> Sime::DecodeStr(
         r.text = std::move(text);
         r.units = has_sp_index_ ? std::string{} : ExtractUnits(path, lower);
         r.tokens = ExtractTokens(path);
+        r.readings = ExtractReadings(path);
         r.score = -tail_states[rank].score;
         r.cnt = input.size();
         // Report per-segment raw-key/char spans for every scheme (full pinyin
@@ -1669,9 +1692,12 @@ void Sime::PruneNode(std::vector<Link>& edges,
     edges = std::move(pruned);
 }
 
-State Sime::InitialState(const std::vector<TokenID>& context) const {
+State Sime::InitialState(const std::vector<TokenID>& context,
+                         const std::vector<std::string>& context_readings) const {
     Scorer::Pos pos = scorer_.StartPos();
     TokenID last = NotToken;
+    const char* last_reading = nullptr;
+    const bool aligned = context_readings.size() == context.size();
     const std::size_t usable =
         static_cast<std::size_t>(std::max(scorer_.Num() - 1, 1));
     const std::size_t begin = context.size() > usable
@@ -1682,6 +1708,7 @@ State Sime::InitialState(const std::vector<TokenID>& context) const {
         if (token == NotToken) {
             pos = scorer_.StartPos();
             last = NotToken;
+            last_reading = nullptr;
             continue;
         }
         Scorer::Pos next{};
@@ -1689,8 +1716,10 @@ State Sime::InitialState(const std::vector<TokenID>& context) const {
         scorer_.Back(next);
         pos = next;
         last = token;
+        last_reading = aligned && !context_readings[i].empty()
+                           ? context_readings[i].c_str() : nullptr;
     }
-    return State(0.0, 0, pos, nullptr, last);
+    return State(0.0, 0, pos, nullptr, last, last_reading);
 }
 
 void Sime::Process(std::vector<Node>& net, bool keep_sep_context) const {
@@ -1719,7 +1748,8 @@ void Sime::Process(std::vector<Node>& net, bool keep_sep_context) const {
                 float_t user_adjust = 0.0;
                 if (user_sentence_enabled_) {
                     user_adjust = user_sentence_.CostAdjustment(
-                        value.backtrace_token, word.id, step);
+                        value.backtrace_token, value.backtrace_pieces,
+                        word.id, word.pieces, step);
                 }
                 float_t next_cost =
                     value.score + step + word.penalty + user_adjust;
@@ -1768,7 +1798,8 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     const std::vector<Node>& net, std::string_view input,
     std::size_t layer2_col, const std::vector<TokenID>& context,
     std::size_t full_extra, std::string_view fixed_prefix,
-    std::size_t prefix_syllables, std::size_t result_limit) const {
+    std::size_t prefix_syllables, std::size_t result_limit,
+    const std::vector<std::string>& context_readings) const {
     std::vector<DecodeResult> results;
     std::unordered_set<std::string> dedup;
     const bool constrained = !fixed_prefix.empty() || prefix_syllables > 0;
@@ -1814,6 +1845,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
         r.text = std::move(text);
         r.units = std::move(units);
         r.tokens = ExtractTokens(path);
+        r.readings = ExtractReadings(path);
         r.score = -tail[rank].score;
         r.cnt = input.size();
         const std::size_t skip_chars = ustr::ToU32(fixed_prefix).size();
@@ -1837,7 +1869,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     }
     if (layer2_col >= net.size()) return results;
 
-    const State initial = InitialState(context);
+    const State initial = InitialState(context, context_readings);
     const float_t penalty_per_unit =
         std::abs(scorer_.UnknownPenalty()) / DistancePenalty;
     std::vector<DecodeResult> layer2;
@@ -1863,6 +1895,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
         entry.text = std::move(text);
         entry.units = std::move(units);
         entry.tokens = ExtractTokens({edge});
+        entry.readings = ExtractReadings({edge});
         entry.score = score;
         entry.cnt = consumed;
         ExtractSegments({edge}, input, entry.segment_keys,
@@ -1893,7 +1926,8 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     std::string_view input,
     const std::vector<TokenID>& context,
     std::size_t extra,
-    bool expansion) const {
+    bool expansion,
+    const std::vector<std::string>& context_readings) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty()) return results;
@@ -1910,13 +1944,14 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     for (auto& col : net) PruneNode(col.es);
 
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
-    State init = InitialState(context);
+    State init = InitialState(context, context_readings);
     net[0].states.Insert(init);
     // keep_sep_context is a no-op on the sp path (no apostrophe sentinel edges);
     // passed for intent. LM context flows across syllables via adjacent edges.
     Process(net, /*keep_sep_context=*/true);
 
-    return CollectCandidates(net, lower, 0, context, extra);
+    return CollectCandidates(net, lower, 0, context, extra, {}, 0, 0,
+                             context_readings);
 }
 
 void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
@@ -1988,7 +2023,8 @@ std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
     const std::vector<TokenID>& context,
     const std::vector<Anchor>& anchors,
     std::size_t extra,
-    bool expansion) const {
+    bool expansion,
+    const std::vector<std::string>& context_readings) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty()) return results;
@@ -2006,17 +2042,19 @@ std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
     for (auto& col : net) PruneNode(col.es);
 
     for (auto& col : net) col.states.SetMaxTop(BeamSize);
-    State init = InitialState(context);
+    State init = InitialState(context, context_readings);
     net[0].states.Insert(init);
     Process(net, /*keep_sep_context=*/true);
 
-    return CollectCandidates(net, lower, 0, context, extra);
+    return CollectCandidates(net, lower, 0, context, extra, {}, 0, 0,
+                             context_readings);
 }
 
 std::vector<DecodeResult> Sime::DecodeCorrection(
     std::string_view input, std::string_view fixed_prefix,
     std::size_t prefix_syllables, std::size_t num, bool expansion,
-    const std::vector<TokenID>& host_context) const {
+    const std::vector<TokenID>& host_context,
+    const std::vector<std::string>& host_readings) const {
     std::lock_guard<std::mutex> lock(decode_mutex_);
     std::vector<DecodeResult> results;
     if (!ready_ || input.empty() || num == 0) return results;
@@ -2048,14 +2086,19 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     // Seed the beam with the host context (as the main decode does) so
     // re-selection reproduces the context-dependent segmentation — e.g. after
     // 你, "ganshan" stays 干啼呢 (gan'sha'n) instead of collapsing to 甘陕.
-    net[0].states.Insert(InitialState(host_context));
+    net[0].states.Insert(InitialState(host_context, host_readings));
     Process(net);
 
     std::vector<TokenID> context(host_context.begin(), host_context.end());
     AppendContextTokens(context, CutByScan(dict_, scorer_, fixed_prefix), scorer_);
+    std::vector<std::string> readings;
+    if (host_readings.size() == host_context.size()) {
+        readings = host_readings;
+        readings.resize(context.size());
+    }
     return CollectCandidates(net, lower, correction_col, context,
                              /*full_extra=*/2, fixed_prefix,
-                             prefix_syllables, num);
+                             prefix_syllables, num, readings);
 }
 
 std::vector<DecodeResult> Sime::NextTokens(
@@ -2110,7 +2153,7 @@ std::vector<DecodeResult> Sime::NextTokens(
         std::string text = TextFromU32(u32);
         if (!seen.insert(text).second) continue;
 
-        results.push_back({std::move(text), {}, {tid}, -pro, 0, {}, {}});
+        results.push_back({std::move(text), {}, {tid}, -pro, 0, {}, {}, {}});
     }
 
     return results;
@@ -2170,7 +2213,7 @@ void Sime::AppendCompletions(const std::u32string& head,
         std::u32string u32(w, w + U32Len(w));
         std::string text = TextFromU32(u32);
         if (!seen.insert(text).second) continue;
-        out.push_back({cost, {std::move(text), {}, {id}, -cost, head_len, {}, {}}});
+        out.push_back({cost, {std::move(text), {}, {id}, -cost, head_len, {}, {}, {}}});
     }
 }
 
@@ -2212,7 +2255,7 @@ std::vector<DecodeResult> Sime::Associate(
             std::u32string u32(chars, chars + U32Len(chars));
             std::string text = TextFromU32(u32);
             if (!seen.insert(text).second) continue;
-            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0, {}, {}}});
+            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0, {}, {}, {}}});
         }
     }
 
@@ -2296,7 +2339,7 @@ std::vector<DecodeResult> Sime::GetTokens(
         if (results.size() >= num) break;
         if (!seen.insert(c.text).second) continue;
         results.push_back({std::move(c.text), {}, {c.id}, -c.score,
-                           prefix.size(), {}, {}});
+                           prefix.size(), {}, {}, {}});
     }
 
     return results;

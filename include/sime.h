@@ -29,6 +29,10 @@ struct DecodeResult {
     // pinyin uses `units` and leaves these arrays empty.
     std::vector<std::size_t> segment_keys;
     std::vector<std::size_t> segment_chars;
+    // Decoded pinyin per token (the edge's pieces, e.g. "yin'hang"),
+    // aligned with `tokens`; "" where an edge has none. User history
+    // learns a pick under these, so polyphones keep their reading.
+    std::vector<std::string> readings;
 };
 
 // A correction anchor: input letters [a,b) must decode to a fixed output.
@@ -79,8 +83,14 @@ public:
     // when the LM is regenerated and TokenIDs no longer mean the same
     // thing. Empty until/unless an LM was successfully loaded.
     const std::string& VocabSignature() const { return vocab_sig_; }
+    // `readings` is the picked candidate's DecodeResult::readings, or
+    // empty when unknown (e.g. an association pick). `context_readings`,
+    // wherever a decode takes it, is aligned with `context`; "" (or an
+    // empty list) for tokens without one, such as host text.
     void LearnUserSentence(const std::vector<TokenID>& context,
-                           const std::vector<TokenID>& sentence);
+                           const std::vector<TokenID>& sentence,
+                           const std::vector<std::string>& readings = {},
+                           const std::vector<std::string>& context_readings = {});
     // UTF-8 text for a single token id, sourced from the dict's
     // mmap'd token table. Empty for NotToken or out-of-range ids.
     std::string TokenText(TokenID id) const;
@@ -101,7 +111,8 @@ public:
         std::string_view input,
         const std::vector<TokenID>& context,
         std::size_t extra = 0,
-        bool expansion = true) const;
+        bool expansion = true,
+        const std::vector<std::string>& context_readings = {}) const;
     // Anchor-constrained sentence decode: the beam keeps only paths consistent
     // with every anchor (see struct Anchor), so non-anchored positions are
     // re-ranked under the anchors instead of being overlaid after the fact.
@@ -110,7 +121,8 @@ public:
         const std::vector<TokenID>& context,
         const std::vector<Anchor>& anchors,
         std::size_t extra = 0,
-        bool expansion = true) const;
+        bool expansion = true,
+        const std::vector<std::string>& context_readings = {}) const;
     // Candidate list for character correction. `fixed_prefix` is the UTF-8
     // text before the tapped syllable and stays unchanged; returned texts are
     // only the replaceable suffix. Long paths precede short/character paths.
@@ -126,7 +138,8 @@ public:
         std::string_view input, std::string_view fixed_prefix,
         std::size_t prefix_syllables, std::size_t num = 60,
         bool expansion = true,
-        const std::vector<TokenID>& context = {}) const;
+        const std::vector<TokenID>& context = {},
+        const std::vector<std::string>& context_readings = {}) const;
     // Prediction: given confirmed token IDs as context, suggest next words.
     // When `en` is true, only English tokens are returned (for the English
     // IME's prediction slot); Chinese tokens are filtered out.
@@ -261,7 +274,8 @@ private:
                    std::unordered_map<TokenID, float_t>* score_cache = nullptr) const;
 
     // Beam search
-    State InitialState(const std::vector<TokenID>& context = {}) const;
+    State InitialState(const std::vector<TokenID>& context = {},
+                       const std::vector<std::string>& context_readings = {}) const;
     void Process(std::vector<Node>& net, bool keep_sep_context = false) const;
     static std::vector<Link> Backtrace(const State& tail_state,
                                        std::size_t end);
@@ -274,6 +288,7 @@ private:
     static std::string AbbreviatePieces(const char* full_pieces,
                                         std::string_view input);
     std::vector<TokenID> ExtractTokens(const std::vector<Link>& path) const;
+    static std::vector<std::string> ExtractReadings(const std::vector<Link>& path);
     // Decoder-supplied raw-key and display-character spans for a chosen path.
     void ExtractSegments(const std::vector<Link>& path,
                          std::string_view input,
@@ -286,7 +301,8 @@ private:
         std::size_t layer2_col, const std::vector<TokenID>& context,
         std::size_t full_extra, std::string_view fixed_prefix = {},
         std::size_t prefix_syllables = 0,
-        std::size_t result_limit = 0) const;
+        std::size_t result_limit = 0,
+        const std::vector<std::string>& context_readings = {}) const;
 
     // Num-key lattice
     void InitNumNet(std::string_view start,
