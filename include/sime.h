@@ -69,6 +69,7 @@ public:
     // onTrimMemory).
     void ResetCaches() const;
 
+    // Gates only decoding; LearnUserSentence always learns.
     void SetUserSentenceEnabled(bool enabled);
     bool UserSentenceEnabled() const { return user_sentence_enabled_; }
     UserSentence& MutableUserSentence() { return user_sentence_; }

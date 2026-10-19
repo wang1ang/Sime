@@ -252,9 +252,6 @@ void Sime::LearnUserSentence(const std::vector<TokenID>& context,
                              const std::vector<TokenID>& sentence,
                              const std::vector<std::string>& readings,
                              const std::vector<std::string>& context_readings) {
-    if (!user_sentence_enabled_) {
-        return;
-    }
     const auto sep = std::find(context.rbegin(), context.rend(), NotToken);
     const auto begin = static_cast<std::size_t>(sep.base() - context.begin());
     std::vector<std::string> tail_readings;

@@ -185,6 +185,35 @@ int main() {
         }
     }
 
+    // Disabled: picks are still learned but don't affect decoding.
+    {
+        sime::Sime engine(SIME_TEST_DICT, SIME_TEST_CNT);
+        if (!engine.Ready()) {
+            std::cerr << "Could not load Sime test models\n";
+            return EXIT_FAILURE;
+        }
+        const auto before = ScoreOf(engine.DecodeStr("hang", 60), "行");
+        const auto picks = engine.DecodeStr("hang", 60);
+        const sime::DecodeResult* hang = nullptr;
+        for (const auto& r : picks) {
+            if (r.text == "行") hang = &r;
+        }
+        Expect(hang != nullptr, "hang decodes 行");
+        if (hang) {
+            for (int i = 0; i < 5; ++i) {
+                engine.LearnUserSentence({}, hang->tokens, hang->readings);
+            }
+            Expect(engine.GetUserSentence().UnigramCount(
+                       hang->tokens.front(), "hang") == 5,
+                   "disabled engine still learns");
+            Expect(ScoreOf(engine.DecodeStr("hang", 60), "行") == before,
+                   "disabled engine decodes without history");
+            engine.SetUserSentenceEnabled(true);
+            Expect(ScoreOf(engine.DecodeStr("hang", 60), "行") > before,
+                   "enabling applies history learned while disabled");
+        }
+    }
+
     if (failures > 0) return EXIT_FAILURE;
     std::cout << "user sentence tests passed\n";
     return EXIT_SUCCESS;
