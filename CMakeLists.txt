@@ -61,6 +61,12 @@ if(BUILD_TESTING)
         SIME_TEST_DICT="${NEW_ROOT}/save/sime.dict"
         SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt")
     add_test(NAME sime-user-sentence COMMAND sime-user-sentence-test)
+    add_executable(sime-t9-test ${NEW_ROOT}/tests/t9_test.cc)
+    target_link_libraries(sime-t9-test PRIVATE sime_core)
+    target_compile_definitions(sime-t9-test PRIVATE
+        SIME_TEST_DICT="${NEW_ROOT}/save/sime.dict"
+        SIME_TEST_CNT="${NEW_ROOT}/save/sime.cnt")
+    add_test(NAME sime-t9 COMMAND sime-t9-test)
 endif()
 
 option(SIME_BUILD_TOOLS "Build Sime command-line and model tools" ON)

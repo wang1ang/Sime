@@ -309,7 +309,16 @@ private:
     void InitNumNet(std::string_view start,
                      std::string_view nums,
                      std::vector<Node>& net,
-                     bool expansion = true) const;
+                     bool expansion = true,
+                     std::size_t forced_boundary = std::string_view::npos) const;
+    // Nine-key input on the main decode paths: leading letters are syllables
+    // picked from the filter (each closed by an apostrophe), the rest digits.
+    void InitT9Net(std::string_view input,
+                   std::vector<Node>& net,
+                   bool expansion = true,
+                   std::size_t forced_boundary = std::string_view::npos) const;
+    // The decoder's view of `input`; `t9` reports whether it is nine-key.
+    std::string NormalizeFor(std::string_view input, bool& t9) const;
 
     // mmap the prebuilt shuangpin index (bare DoubleArray). Zero-copy, so the
     // mapping outlives the engine (iOS ~77MB budget rules out a heap copy).

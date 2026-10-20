@@ -356,7 +356,8 @@ void Sime::ComputeEdgePenalties(std::vector<Node>& net,
 void Sime::InitNumNet(std::string_view start,
                               std::string_view nums,
                               std::vector<Node>& net,
-                              bool expansion) const {
+                              bool expansion,
+                              std::size_t forced_boundary) const {
     const std::size_t p = start.size();
     const std::size_t d = nums.size();
     const std::size_t total = p + d;
@@ -445,6 +446,9 @@ void Sime::InitNumNet(std::string_view start,
     std::vector<bool> digit_is_syllable;
     if (d > 0) {
         digit_bounds.push_back(0);
+        const std::size_t forced_dpos =
+            forced_boundary > p && forced_boundary != std::string_view::npos
+                ? forced_boundary - p : std::string_view::npos;
         std::size_t pos = 0;
         while (pos < d) {
             if (nums[pos] == '\'') {
@@ -463,6 +467,13 @@ void Sime::InitNumNet(std::string_view start,
                     terminal = !Dict::IsExtendableT9Syllable(span);
                     break;
                 }
+            }
+            // A correction locks the prefix here (see InitNet).
+            if (pos < forced_dpos && pos + best > forced_dpos) {
+                best = forced_dpos - pos;
+                const std::string_view clamped = nums.substr(pos, best);
+                terminal = Dict::IsKnownT9Syllable(clamped) &&
+                           !Dict::IsExtendableT9Syllable(clamped);
             }
             pos += best;
             digit_bounds.push_back(pos);
@@ -670,6 +681,61 @@ void Sime::InitNumNet(std::string_view start,
     net[total].es.push_back({total, total + 1, NotToken});
 }
 
+namespace {
+
+bool HasT9Digits(std::string_view input) {
+    return std::any_of(input.begin(), input.end(),
+                       [](char c) { return c >= '2' && c <= '9'; });
+}
+
+std::string NormalizeInput(std::string_view input) {
+    std::string lower;
+    lower.reserve(input.size());
+    for (char c : input) {
+        if (c == '\'') {
+            lower.push_back(c);
+        } else if (c == ' ') {
+            // Space → ▁ (U+2581, UTF-8: E2 96 81)
+            lower.push_back(static_cast<char>(0xE2));
+            lower.push_back(static_cast<char>(0x96));
+            lower.push_back(static_cast<char>(0x81));
+        } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+            lower.push_back(c);
+        }
+    }
+    return lower;
+}
+
+} // namespace
+
+void Sime::InitT9Net(std::string_view input,
+                     std::vector<Node>& net,
+                     bool expansion,
+                     std::size_t forced_boundary) const {
+    std::size_t split = 0;
+    while (split < input.size() && !(input[split] >= '2' && input[split] <= '9')) {
+        ++split;
+    }
+    InitNumNet(input.substr(0, split), input.substr(split), net, expansion,
+               forced_boundary);
+}
+
+std::string Sime::NormalizeFor(std::string_view input, bool& t9) const {
+    t9 = false;
+    if (has_sp_index_) return std::string(input);
+    t9 = HasT9Digits(input);
+    if (!t9) return NormalizeInput(input);
+    // Nine-key raw is digits, picked lowercase syllables and apostrophes.
+    std::string out;
+    out.reserve(input.size());
+    for (char c : input) {
+        if ((c >= '2' && c <= '9') || (c >= 'a' && c <= 'z') || c == '\'') {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
 std::string Sime::AbbreviatePieces(const char* full_pieces,
                                    std::string_view input) {
     // Parse syllables from full_pieces.
@@ -811,7 +877,12 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                            std::size_t skip_chars) const {
     keys.clear();
     chars.clear();
+    // A typed apostrophe renders nothing; its key joins the next segment so
+    // the spans still add up to the raw input.
+    std::size_t separators = 0;
     auto append_span = [&](std::size_t span_keys, std::size_t span_chars) {
+        span_keys += separators;
+        separators = 0;
         if (skip_chars >= span_chars) {
             skip_chars -= span_chars;
             return;
@@ -825,6 +896,8 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
             if (link.start < input.size() && input[link.start] != '\'') {
                 const std::size_t span = link.end - link.start;
                 append_span(span, span);
+            } else if (link.start < input.size()) {
+                ++separators;
             }
             continue;
         }
@@ -890,6 +963,18 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
                 }
                 spans.push_back(cur);
             }
+            // Apostrophes typed inside the word (xi'an) join the syllable
+            // after them.
+            const auto source = input.substr(link.start, key_count);
+            std::size_t offset = 0;
+            for (std::size_t& span : spans) {
+                std::size_t lead = 0;
+                while (offset + lead < source.size() && source[offset + lead] == '\'') {
+                    ++lead;
+                }
+                offset += lead + span;
+                span += lead;
+            }
             std::size_t total = 0;
             for (const std::size_t span : spans) total += span;
             if (spans.size() == char_count && total == key_count) {
@@ -899,6 +984,7 @@ void Sime::ExtractSegments(const std::vector<Link>& path,
         }
         append_span(key_count, char_count);
     }
+    if (separators > 0 && !keys.empty()) keys.back() += separators;
 }
 
 std::vector<DecodeResult> Sime::DecodeNumSentence(
@@ -1090,27 +1176,6 @@ std::vector<DecodeResult> Sime::DecodeNumStr(
     return results;
 }
 
-namespace {
-
-std::string NormalizeInput(std::string_view input) {
-    std::string lower;
-    lower.reserve(input.size());
-    for (char c : input) {
-        if (c == '\'') {
-            lower.push_back(c);
-        } else if (c == ' ') {
-            // Space → ▁ (U+2581, UTF-8: E2 96 81)
-            lower.push_back(static_cast<char>(0xE2));
-            lower.push_back(static_cast<char>(0x96));
-            lower.push_back(static_cast<char>(0x81));
-        } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-            lower.push_back(c);
-        }
-    }
-    return lower;
-}
-
-} // namespace
 
 std::vector<DecodeResult> Sime::DecodeStr(
     std::string_view input,
@@ -1120,14 +1185,14 @@ std::vector<DecodeResult> Sime::DecodeStr(
     if (!ready_ || input.empty()) return results;
     MaybeTrimCaches();
 
-    // Shuangpin: input is raw keystrokes (may include ';'); use verbatim.
-    // NormalizeInput would strip ';' and other non-letters, so skip it.
-    std::string lower = has_sp_index_ ? std::string(input)
-                                      : NormalizeInput(input);
+    // Shuangpin keeps raw keystrokes (may include ';') verbatim.
+    bool t9 = false;
+    std::string lower = NormalizeFor(input, t9);
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    if (has_sp_index_) InitNetSp(lower, net, /*expansion=*/false);
+    if (t9) InitT9Net(lower, net, /*expansion=*/false);
+    else if (has_sp_index_) InitNetSp(lower, net, /*expansion=*/false);
     else InitNet(lower, net, /*expansion=*/false);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
@@ -1854,7 +1919,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
                                            const DecodeResult& b) {
         return a.score > b.score;
     });
-    RerankWithGru(full, gru_.get(), false);
+    RerankWithGru(full, gru_.get(), !has_sp_index_ && HasT9Digits(input));
     for (std::size_t i = 0; i < full.size() && i < 1 + full_extra; ++i) {
         dedup.insert(full[i].text);
         results.push_back(std::move(full[i]));
@@ -1930,12 +1995,13 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     if (!ready_ || input.empty()) return results;
     MaybeTrimCaches();
 
-    std::string lower = has_sp_index_ ? std::string(input)
-                                      : NormalizeInput(input);
+    bool t9 = false;
+    std::string lower = NormalizeFor(input, t9);
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    if (has_sp_index_) InitNetSp(lower, net, expansion);
+    if (t9) InitT9Net(lower, net, expansion);
+    else if (has_sp_index_) InitNetSp(lower, net, expansion);
     else InitNet(lower, net, expansion);
     ComputeEdgePenalties(net, lower);
     for (auto& col : net) PruneNode(col.es);
@@ -2027,12 +2093,13 @@ std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
     if (!ready_ || input.empty()) return results;
     MaybeTrimCaches();
 
-    std::string lower = has_sp_index_ ? std::string(input)
-                                      : NormalizeInput(input);
+    bool t9 = false;
+    std::string lower = NormalizeFor(input, t9);
     if (lower.empty()) return results;
 
     std::vector<Node> net;
-    if (has_sp_index_) InitNetSp(lower, net, expansion, anchors);
+    if (t9) InitT9Net(lower, net, expansion);
+    else if (has_sp_index_) InitNetSp(lower, net, expansion, anchors);
     else InitNet(lower, net, expansion);
     ApplyAnchors(net, lower, anchors);
     ComputeEdgePenalties(net, lower);
@@ -2057,8 +2124,8 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     if (!ready_ || input.empty() || num == 0) return results;
     MaybeTrimCaches();
 
-    const std::string lower = has_sp_index_ ? std::string(input)
-                                            : NormalizeInput(input);
+    bool t9 = false;
+    const std::string lower = NormalizeFor(input, t9);
     if (lower.empty()) return results;
     // prefix_syllables is a raw-key column (summed from the chosen path's
     // per-segment key spans) for every scheme, so re-selection cuts at the
@@ -2066,7 +2133,8 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     const std::size_t correction_col = std::min(prefix_syllables, lower.size());
 
     std::vector<Node> net;
-    if (has_sp_index_) InitNetSp(lower, net, expansion);
+    if (t9) InitT9Net(lower, net, expansion, correction_col);
+    else if (has_sp_index_) InitNetSp(lower, net, expansion);
     else InitNet(lower, net, expansion, correction_col);
     // The tapped segment starts a word. English is tapped as a whole, so no
     // English edge may cross its column (NTP when tapping P of NT|P); Chinese
