@@ -96,6 +96,42 @@ int main() {
         const auto r = engine.DecodeSentenceWithAnchors("64426", {}, {anchor}, 2);
         Expect(!r.empty() && r[0].text.rfind("米", 0) == 0, "anchor 米 holds");
     }
+    // A reading anchor pins a syllable and re-decodes around it.
+    {
+        sime::Anchor gao;
+        gao.a = 2;
+        gao.b = 5;
+        gao.reading = "gao";
+        const auto r = engine.DecodeSentenceWithAnchors("64426", {}, {gao}, 4);
+        Expect(!r.empty(), "reading anchor gao decodes");
+        for (const auto& c : r) {
+            const auto sep = c.units.find('\'');
+            Expect(sep == std::string::npos ||
+                       c.units.substr(sep + 1, 3) == "gao",
+                   "reading anchor gao holds");
+        }
+    }
+    {
+        sime::Anchor ni;
+        ni.a = 0;
+        ni.b = 2;
+        ni.text = "你";
+        sime::Anchor gao;
+        gao.a = 2;
+        gao.b = 5;
+        gao.reading = "gao";
+        const auto r = engine.DecodeSentenceWithAnchors("64426", {}, {ni, gao}, 2);
+        Expect(!r.empty() && r[0].units == "ni'gao" && r[0].text.rfind("你", 0) == 0,
+               "char and reading anchors combine");
+    }
+    {
+        sime::Anchor an;
+        an.a = 2;
+        an.b = 5;
+        an.reading = "an";
+        const auto r = engine.DecodeSentenceWithAnchors("94'26", {}, {an}, 2);
+        Expect(!r.empty() && r[0].units == "xi'an", "reading anchor after 1 key");
+    }
     // Filter syllables for a digit run, longest first.
     {
         const auto s = sime::Dict::T9PinyinSyllables("94", 32);

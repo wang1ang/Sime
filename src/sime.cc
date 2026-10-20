@@ -2017,6 +2017,26 @@ std::vector<DecodeResult> Sime::DecodeSentence(
                              context_readings);
 }
 
+// The piece syllable of `e` that starts at input key `key`, or "" if none
+// does. Assumes one key per letter, skipping the input's `'` separators.
+std::string_view Sime::SyllableAt(const Link& e, std::string_view input,
+                                  std::size_t key) {
+    if (!e.pieces) return {};
+    const std::string_view pieces(e.pieces);
+    std::size_t k = e.start;
+    std::size_t pos = 0;
+    while (pos <= pieces.size()) {
+        while (k < input.size() && input[k] == '\'') ++k;
+        const std::size_t end = std::min(pieces.find('\'', pos), pieces.size());
+        const auto syllable = pieces.substr(pos, end - pos);
+        if (k == key) return syllable;
+        if (k > key) return {};
+        k += syllable.size();
+        pos = end + 1;
+    }
+    return {};
+}
+
 void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
                         const std::vector<Anchor>& anchors) const {
     // Erase every edge overlapping [a,b) for which keep() is false; return
@@ -2036,6 +2056,18 @@ void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
 
     for (const auto& anc : anchors) {
         if (anc.b <= anc.a || anc.b > input.size()) continue;
+
+        if (!anc.english && !anc.reading.empty()) {
+            // The 1 key's `'` joins the next span; the syllable starts after it.
+            std::size_t a = anc.a;
+            while (a < input.size() && input[a] == '\'') ++a;
+            if (a >= input.size()) continue;
+            filter(a, a + 1, [&](const Link& e) {
+                return !e.english && e.start <= a &&
+                       SyllableAt(e, input, a) == anc.reading;
+            });
+            if (anc.text.empty() && anc.token == 0) continue;
+        }
 
         if (anc.english) {
             // [a,b) is one literal unit with hard boundaries. Reuse an existing

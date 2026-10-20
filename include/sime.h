@@ -38,13 +38,16 @@ struct DecodeResult {
 // A correction anchor: input letters [a,b) must decode to a fixed output.
 // Chinese anchors are per-character (matched by `token`: a path is kept iff a
 // covering edge outputs that char, so words spanning a/b still count). English
-// anchors treat [a,b) as one literal unit with hard boundaries.
+// anchors treat [a,b) as one literal unit with hard boundaries. A `reading`
+// only pins the syllable starting at key a (nine-key: keys map 1:1 to
+// letters), leaving its characters free.
 struct Anchor {
     std::size_t a = 0;
     std::size_t b = 0;
     bool english = false;
     TokenID token = 0;   // Chinese: pinned char's token id
     std::string text;    // English: pinned literal (UTF-8)
+    std::string reading; // Chinese: required syllable at a, e.g. "gao"
 };
 
 class Sime {
@@ -271,6 +274,8 @@ private:
     // after InitNet, before penalties/pruning/beam.
     void ApplyAnchors(std::vector<Node>& net, std::string_view input,
                       const std::vector<Anchor>& anchors) const;
+    static std::string_view SyllableAt(const Link& e, std::string_view input,
+                                       std::size_t key);
     void PruneNode(std::vector<Link>& edges,
                    std::unordered_map<TokenID, float_t>* score_cache = nullptr) const;
 
