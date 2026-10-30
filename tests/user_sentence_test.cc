@@ -214,6 +214,41 @@ int main() {
         }
     }
 
+    // Association: a learned successor the LM ranks too low still shows up,
+    // only while history is enabled.
+    {
+        sime::Sime engine(SIME_TEST_DICT, SIME_TEST_CNT);
+        if (!engine.Ready()) {
+            std::cerr << "Could not load Sime test models\n";
+            return EXIT_FAILURE;
+        }
+        auto token_of = [&](std::string_view pinyin, std::string_view text) {
+            for (const auto& r : engine.DecodeStr(pinyin, 60)) {
+                if (r.text == text) return r.tokens;
+            }
+            return std::vector<sime::TokenID>{};
+        };
+        const auto mingtian = token_of("mingtian", "明天");
+        const auto huli = token_of("huli", "狐狸");
+        Expect(mingtian.size() == 1 && huli.size() == 1, "test words decode");
+        if (mingtian.size() == 1 && huli.size() == 1) {
+            Expect(ScoreOf(engine.Associate(mingtian, 9), "狐狸") < -1e29,
+                   "LM alone does not associate 狐狸 after 明天");
+            // A bigram is learned only after a context that was learned too.
+            for (int i = 0; i < 3; ++i) {
+                engine.LearnUserSentence({}, mingtian);
+                engine.LearnUserSentence(mingtian, huli);
+            }
+            Expect(ScoreOf(engine.Associate(mingtian, 9), "狐狸") < -1e29,
+                   "disabled history leaves association unchanged");
+            engine.SetUserSentenceEnabled(true);
+            Expect(ScoreOf(engine.Associate(mingtian, 9), "狐狸") > -1e29,
+                   "learned successor is associated");
+            Expect(ScoreOf(engine.Associate({}, 9), "狐狸") < -1e29,
+                   "empty context associates nothing");
+        }
+    }
+
     if (failures > 0) return EXIT_FAILURE;
     std::cout << "user sentence tests passed\n";
     return EXIT_SUCCESS;

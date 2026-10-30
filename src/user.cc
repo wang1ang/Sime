@@ -124,6 +124,7 @@ void UserSentence::Clear() {
     distinct_successors_.clear();
     word_bigram_.clear();
     word_successors_.clear();
+    successor_tokens_.clear();
     total_unigram_count_ = 0;
 }
 
@@ -476,6 +477,15 @@ std::uint32_t UserSentence::DistinctSuccessors(TokenID prev) const {
     return it == distinct_successors_.end() ? 0 : it->second;
 }
 
+std::vector<TokenID> UserSentence::Successors(TokenID prev) const {
+    std::vector<TokenID> out;
+    auto it = successor_tokens_.find(prev);
+    if (it == successor_tokens_.end()) return out;
+    out.reserve(it->second.size());
+    for (const auto& [token, count] : it->second) out.push_back(token);
+    return out;
+}
+
 float_t UserSentence::CostAdjustment(TokenID prev, const char* prev_reading,
                                      TokenID cur, const char* reading,
                                      float_t lm_step) const {
@@ -613,12 +623,19 @@ void UserSentence::CountBigram(TokenID prev, std::string_view prev_reading,
                                std::uint64_t word, int delta) {
     const auto d = static_cast<std::uint32_t>(delta > 0 ? delta : -delta);
     const auto prev_word = WordKey(prev, prev_reading);
+    const auto cur = static_cast<TokenID>(word & 0xFFFFFFFFU);
     if (delta > 0) {
+        successor_tokens_[prev][cur] += d;
         IncBigramTrackSucc(bigram_, distinct_successors_, prev,
                            BigramKey(prev, word), d);
         IncBigramTrackSucc(word_bigram_, word_successors_, prev_word,
                            BigramKey(prev_word, word), d);
     } else {
+        if (auto it = successor_tokens_.find(prev);
+            it != successor_tokens_.end()) {
+            DecCount(it->second, cur, d);
+            if (it->second.empty()) successor_tokens_.erase(it);
+        }
         DecBigramTrackSucc(bigram_, distinct_successors_, prev,
                            BigramKey(prev, word), d);
         DecBigramTrackSucc(word_bigram_, word_successors_, prev_word,
@@ -713,6 +730,7 @@ void UserSentence::Rebuild() {
     distinct_successors_.clear();
     word_bigram_.clear();
     word_successors_.clear();
+    successor_tokens_.clear();
     total_unigram_count_ = 0;
     for (const auto& entry : sentences_) {
         AdjustEntryCounts(entry, +1);

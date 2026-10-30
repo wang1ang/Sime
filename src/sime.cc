@@ -2206,7 +2206,13 @@ void Sime::AppendCompletions(const std::u32string& head,
             if (w[k] != head[k]) break;
         if (k != head_len || w[head_len] == 0) continue;  // not a strict extension
         if (IsAssocPunct(w + head_len)) continue;         // tail starts with punct
-        const float_t cost = CostGiven(history, id) - base;
+        float_t cost = CostGiven(history, id);
+        if (user_sentence_enabled_) {
+            cost += user_sentence_.CostAdjustment(
+                history.empty() ? NotToken : history.back(), nullptr, id,
+                nullptr, cost);
+        }
+        cost -= base;
         std::u32string u32(w, w + U32Len(w));
         std::string text = TextFromU32(u32);
         if (!seen.insert(text).second) continue;
@@ -2253,6 +2259,26 @@ std::vector<DecodeResult> Sime::Associate(
             std::string text = TextFromU32(u32);
             if (!seen.insert(text).second) continue;
             cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0, {}, {}, {}}});
+        }
+    }
+
+    // User history: successors the user picked join the pool even when
+    // the LM ranks them too low to fetch, and all of ① get boosted.
+    if (user_sentence_enabled_) {
+        for (TokenID tid : user_sentence_.Successors(context.back())) {
+            if (tid < StartToken) continue;
+            const char32_t* chars = dict_.TokenAt(tid);
+            if (IsAssocPunct(chars)) continue;
+            std::u32string u32(chars, chars + U32Len(chars));
+            std::string text = TextFromU32(u32);
+            if (!seen.insert(text).second) continue;
+            const float_t pro = CostGiven(context, tid);
+            cands.push_back({pro, {std::move(text), {}, {tid}, -pro, 0, {}, {}, {}}});
+        }
+        for (auto& [cost, result] : cands) {
+            cost += user_sentence_.CostAdjustment(
+                context.back(), nullptr, result.tokens.front(), nullptr, cost);
+            result.score = -cost;
         }
     }
 
