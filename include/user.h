@@ -95,6 +95,8 @@ public:
     // N1+(prev, *) — number of distinct successors after `prev`.
     // Used by Ney's absolute-discounting backoff weight (γ).
     std::uint32_t DistinctSuccessors(TokenID prev) const;
+    // Tokens picked right after `prev`, under any reading.
+    std::vector<TokenID> Successors(TokenID prev) const;
     // Cost adjustment to add to LM cost for a transition prev→cur, where
     // each is read as its reading (an edge's pieces; null = unknown).
     // `lm_step` is the LM cost (positive, = -log P) for the same
@@ -144,6 +146,10 @@ private:
     // The same keyed by the prev word, so a known prev reading is told apart.
     std::unordered_map<std::uint64_t, std::uint32_t> word_bigram_;
     std::unordered_map<std::uint64_t, std::uint32_t> word_successors_;
+    // prev token → successor token → count, so association can offer
+    // successors the LM ranks too low to fetch.
+    std::unordered_map<TokenID, std::unordered_map<TokenID, std::uint32_t>>
+        successor_tokens_;
     std::uint32_t total_unigram_count_ = 0;
 };
 
