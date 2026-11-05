@@ -39,8 +39,9 @@ struct DecodeResult {
 // Chinese anchors are per-character (matched by `token`: a path is kept iff a
 // covering edge outputs that char, so words spanning a/b still count). English
 // anchors treat [a,b) as one literal unit with hard boundaries. A `reading`
-// only pins the syllable starting at key a (nine-key: keys map 1:1 to
-// letters), leaving its characters free.
+// only pins the syllable starting at key a, leaving its characters free;
+// nine-key only, since it relies on keys mapping 1:1 to letters (full-pinyin
+// abbreviations like "zh" for "zhi" would misalign).
 struct Anchor {
     std::size_t a = 0;
     std::size_t b = 0;
@@ -274,8 +275,6 @@ private:
     // after InitNet, before penalties/pruning/beam.
     void ApplyAnchors(std::vector<Node>& net, std::string_view input,
                       const std::vector<Anchor>& anchors) const;
-    static std::string_view SyllableAt(const Link& e, std::string_view input,
-                                       std::size_t key);
     void PruneNode(std::vector<Link>& edges,
                    std::unordered_map<TokenID, float_t>* score_cache = nullptr) const;
 
@@ -308,7 +307,8 @@ private:
         std::size_t full_extra, std::string_view fixed_prefix = {},
         std::size_t prefix_syllables = 0,
         std::size_t result_limit = 0,
-        const std::vector<std::string>& context_readings = {}) const;
+        const std::vector<std::string>& context_readings = {},
+        bool t9 = false) const;
 
     // Num-key lattice
     void InitNumNet(std::string_view start,

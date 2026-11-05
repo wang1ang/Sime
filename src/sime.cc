@@ -1861,7 +1861,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
     std::size_t layer2_col, const std::vector<TokenID>& context,
     std::size_t full_extra, std::string_view fixed_prefix,
     std::size_t prefix_syllables, std::size_t result_limit,
-    const std::vector<std::string>& context_readings) const {
+    const std::vector<std::string>& context_readings, bool t9) const {
     std::vector<DecodeResult> results;
     std::unordered_set<std::string> dedup;
     const bool constrained = !fixed_prefix.empty() || prefix_syllables > 0;
@@ -1919,7 +1919,7 @@ std::vector<DecodeResult> Sime::CollectCandidates(
                                            const DecodeResult& b) {
         return a.score > b.score;
     });
-    RerankWithGru(full, gru_.get(), !has_sp_index_ && HasT9Digits(input));
+    RerankWithGru(full, gru_.get(), t9);
     for (std::size_t i = 0; i < full.size() && i < 1 + full_extra; ++i) {
         dedup.insert(full[i].text);
         results.push_back(std::move(full[i]));
@@ -2014,16 +2014,19 @@ std::vector<DecodeResult> Sime::DecodeSentence(
     Process(net, /*keep_sep_context=*/true);
 
     return CollectCandidates(net, lower, 0, context, extra, {}, 0, 0,
-                             context_readings);
+                             context_readings, t9);
 }
 
-// The piece syllable of `e` that starts at input key `key`, or "" if none
-// does. Assumes one key per letter, skipping the input's `'` separators.
-std::string_view Sime::SyllableAt(const Link& e, std::string_view input,
-                                  std::size_t key) {
-    if (!e.pieces) return {};
-    const std::string_view pieces(e.pieces);
-    std::size_t k = e.start;
+namespace {
+
+// The syllable of `pieces` (an edge starting at input key `start`) that starts
+// at key `key`, or "" if none does. Nine-key only: assumes one key per letter
+// (full-pinyin abbreviations break that), skipping the input's `'` separators.
+std::string_view SyllableAt(const char* pieces_cstr, std::size_t start,
+                            std::string_view input, std::size_t key) {
+    if (!pieces_cstr) return {};
+    const std::string_view pieces(pieces_cstr);
+    std::size_t k = start;
     std::size_t pos = 0;
     while (pos <= pieces.size()) {
         while (k < input.size() && input[k] == '\'') ++k;
@@ -2036,6 +2039,8 @@ std::string_view Sime::SyllableAt(const Link& e, std::string_view input,
     }
     return {};
 }
+
+} // namespace
 
 void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
                         const std::vector<Anchor>& anchors) const {
@@ -2058,13 +2063,14 @@ void Sime::ApplyAnchors(std::vector<Node>& net, std::string_view input,
         if (anc.b <= anc.a || anc.b > input.size()) continue;
 
         if (!anc.english && !anc.reading.empty()) {
+            // Reading anchors come only from nine-key (see SyllableAt).
             // The 1 key's `'` joins the next span; the syllable starts after it.
             std::size_t a = anc.a;
             while (a < input.size() && input[a] == '\'') ++a;
             if (a >= input.size()) continue;
             filter(a, a + 1, [&](const Link& e) {
                 return !e.english && e.start <= a &&
-                       SyllableAt(e, input, a) == anc.reading;
+                       SyllableAt(e.pieces, e.start, input, a) == anc.reading;
             });
             if (anc.text.empty() && anc.token == 0) continue;
         }
@@ -2143,7 +2149,7 @@ std::vector<DecodeResult> Sime::DecodeSentenceWithAnchors(
     Process(net, /*keep_sep_context=*/true);
 
     return CollectCandidates(net, lower, 0, context, extra, {}, 0, 0,
-                             context_readings);
+                             context_readings, t9);
 }
 
 std::vector<DecodeResult> Sime::DecodeCorrection(
@@ -2195,7 +2201,7 @@ std::vector<DecodeResult> Sime::DecodeCorrection(
     }
     return CollectCandidates(net, lower, correction_col, context,
                              /*full_extra=*/2, fixed_prefix,
-                             prefix_syllables, num, readings);
+                             prefix_syllables, num, readings, t9);
 }
 
 std::vector<DecodeResult> Sime::NextTokens(
