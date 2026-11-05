@@ -53,19 +53,6 @@ int main() {
         const auto r = engine.DecodeSentence("64426", 2, true);
         Expect(!r.empty() && r[0].text == "你好", "64426 -> 你好");
     }
-    // A syllable picked from the filter replaces its digits, closed by an
-    // apostrophe; the apostrophe's key joins the next span.
-    {
-        const auto r = engine.DecodeSentence("zhong'486", 2, true);
-        Expect(!r.empty() && r[0].text == "中国", "zhong'486 -> 中国");
-        Expect(!r.empty() && KeySum(r[0]) == 9, "zhong'486 spans cover raw");
-    }
-    {
-        const auto r = engine.DecodeSentence("xi'26", 6, true);
-        for (const auto& c : r) {
-            Expect(c.text != "先" && c.text != "县", "xi'26 keeps the xi pick");
-        }
-    }
     // The 1 key separates syllables.
     {
         const auto r = engine.DecodeSentence("94'26", 2, true);
