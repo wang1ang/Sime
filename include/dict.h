@@ -41,6 +41,9 @@ public:
     void Clear();
 
     const trie::DoubleArray& Dat(DatType type) const { return dats_[type]; }
+    // Hash of the token text table: equal hashes mean TokenIDs map to the
+    // same text, whatever the file's mtime or path.
+    uint64_t TokenTableHash() const { return token_hash_; }
     Entry GetEntry(DatType type, uint32_t index) const;
 
     // Cache trim. See trie::DoubleArray::ClearSepCache / ResetSepCache.
@@ -81,6 +84,7 @@ private:
     // Token text table — pointers into mmap'd memory.
     uint32_t token_count_ = 0;
     std::vector<const char32_t*> token_strs_;
+    uint64_t token_hash_ = 0;
 
     // mmap state — replaces the heap-loaded blob_ vector.
     void* mmap_addr_ = nullptr;

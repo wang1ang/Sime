@@ -36,6 +36,7 @@ void Dict::Clear() {
     scratch_.clear();
     token_count_ = 0;
     token_strs_.clear();
+    token_hash_ = 0;
     if (mmap_addr_ && mmap_addr_ != MAP_FAILED) {
         munmap(mmap_addr_, mmap_len_);
     }
@@ -78,10 +79,16 @@ bool Dict::Load(const std::filesystem::path& path,
     // Parse token text table — pointers into mmap'd memory.
     token_strs_.reserve(token_count_);
     auto p = reinterpret_cast<const char32_t*>(base + token_offset);
+    uint64_t hash = 1469598103934665603ULL;  // FNV-1a over chars incl. terminators
     for (uint32_t i = 0; i < token_count_; ++i) {
         token_strs_.push_back(p);
-        while (*p++) {}
+        char32_t c;
+        do {
+            c = *p++;
+            hash = (hash ^ static_cast<uint64_t>(c)) * 1099511628211ULL;
+        } while (c);
     }
+    token_hash_ = hash;
 
     // Parse DAT sections
     for (int t = 0; t < DatCount; ++t) {

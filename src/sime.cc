@@ -117,24 +117,12 @@ void PushBestLayer2Entry(std::vector<DecodeResult>& best_entries,
     }
 }
 
-// Vocabulary signature used to detect stale user-sentence files when the
-// LM is regenerated (new TokenIDs). LM file size + mtime is a cheap proxy
-// for "was the LM regenerated"; when it changes we drop the old file.
-std::string MakeVocabSignature(const std::filesystem::path& dict_path,
-                               const std::filesystem::path& lm_path) {
-    std::error_code ec;
-    auto dict_size = std::filesystem::file_size(dict_path, ec);
-    if (ec) return {};
-    auto lm_size = std::filesystem::file_size(lm_path, ec);
-    if (ec) return {};
-    auto lm_mtime = std::filesystem::last_write_time(lm_path, ec);
-    if (ec) return {};
-    auto lm_mtime_secs =
-        std::chrono::duration_cast<std::chrono::seconds>(
-            lm_mtime.time_since_epoch())
-            .count();
+// Detects user-sentence files whose TokenIDs belong to another token table.
+// Not file mtimes: every app build/install rewrites them, which forced a
+// seconds-long re-tokenizing migration on the first launch after an update.
+std::string MakeVocabSignature(const Dict& dict) {
     std::ostringstream ss;
-    ss << dict_size << ':' << lm_size << ':' << lm_mtime_secs;
+    ss << "t" << dict.TokenCount() << ':' << std::hex << dict.TokenTableHash();
     return ss.str();
 }
 
@@ -169,7 +157,7 @@ Sime::Sime(const std::filesystem::path& dict_path,
         scorer_.Reset();
         return;
     }
-    vocab_sig_ = MakeVocabSignature(dict_path, model_path);
+    vocab_sig_ = MakeVocabSignature(dict_);
     gru_ = std::make_unique<GruReranker>();
     gru_->Load(model_path.parent_path());
     ready_ = true;

@@ -83,10 +83,8 @@ public:
     // caller may delete the stale file when this returns false.
     bool LoadUserSentence(const std::filesystem::path& path);
     bool SaveUserSentence(const std::filesystem::path& path) const;
-    // Opaque tag identifying the LM vocabulary the engine is currently
-    // bound to. Stored alongside user sentences so they get dropped
-    // when the LM is regenerated and TokenIDs no longer mean the same
-    // thing. Empty until/unless an LM was successfully loaded.
+    // Opaque tag for the dict's token table, stored with user sentences so
+    // they are migrated when TokenIDs change. Empty until the engine loads.
     const std::string& VocabSignature() const { return vocab_sig_; }
     // `readings` is the picked candidate's DecodeResult::readings, or
     // empty when unknown (e.g. an association pick). `context_readings`,
